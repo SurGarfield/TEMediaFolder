@@ -4,7 +4,7 @@
  * 媒体预览（支持本地、腾讯COS、阿里云OSS和兰空图床）
  * @package TEMediaFolder
  * @author 森木志
- * @version 2.3.0
+ * @version 2.3.1
  * @link https://oxxx.cn
  */
 

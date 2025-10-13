@@ -212,6 +212,8 @@ class Renderer
         echo '.temf-meta{display:flex;flex-direction:column;gap:6px;padding:6px}';
         echo '.temf-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#666}';
         echo '.temf-actions{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}';
+        // 优化“插入所选”按钮的垂直对齐
+        echo '#temf-insert-selected{align-items:center;position:relative;top:-1px;margin-top:0px}';
         echo '.temf-check{margin-right:auto;font-size:12px;color:#666;display:flex;align-items:center;gap:4px}';
         
         echo '.temf-progress{display:none;align-items:center;gap:8px;margin-left:12px;flex:0 0 auto;max-width:280px}';

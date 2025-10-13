@@ -1082,15 +1082,46 @@
         },
         
         copy: function(url, button) {
-            if (navigator.clipboard) {
-                navigator.clipboard.writeText(url).then(function() {
-                    var originalText = button.textContent;
-                    button.textContent = TEMF_CONF.labels.copied;
-                    setTimeout(function() {
-                        button.textContent = originalText;
-                    }, 1200);
-                });
-            }
+			var showCopied = function(btn) {
+				try {
+					var originalText = btn.textContent;
+					btn.textContent = TEMF_CONF && TEMF_CONF.labels && TEMF_CONF.labels.copied ? TEMF_CONF.labels.copied : '已复制';
+					setTimeout(function() {
+						btn.textContent = originalText;
+					}, 1200);
+				} catch (e) {}
+			};
+
+			if (navigator.clipboard && navigator.clipboard.writeText) {
+				navigator.clipboard.writeText(url).then(function() {
+					showCopied(button);
+				}).catch(function() {
+					// fallback below
+					try {
+						var temp = document.createElement('input');
+						temp.style.position = 'fixed';
+						temp.style.opacity = '0';
+						temp.value = url;
+						document.body.appendChild(temp);
+						temp.select();
+						document.execCommand('copy');
+						document.body.removeChild(temp);
+						showCopied(button);
+					} catch (err) {}
+				});
+			} else {
+				try {
+					var temp = document.createElement('input');
+					temp.style.position = 'fixed';
+					temp.style.opacity = '0';
+					temp.value = url;
+					document.body.appendChild(temp);
+					temp.select();
+					document.execCommand('copy');
+					document.body.removeChild(temp);
+					showCopied(button);
+				} catch (err) {}
+			}
         },
         
         upload: function() {
@@ -1810,11 +1841,20 @@
                 e.preventDefault();
             }
             
-        if (target && target.matches("[data-temf-copy]")) {
-                var url = target.getAttribute("data-url");
-                fileOps.copy(url, target);
-                e.preventDefault();
-            }
+		var copyBtn = null;
+		if (target) {
+			if (typeof target.closest === 'function') {
+				copyBtn = target.closest("[data-temf-copy]");
+			}
+			if (!copyBtn && target.matches && target.matches("[data-temf-copy]")) {
+				copyBtn = target;
+			}
+		}
+		if (copyBtn) {
+				var url = copyBtn.getAttribute("data-url");
+				fileOps.copy(url, copyBtn);
+				e.preventDefault();
+			}
             
             if (target && target.id === "temf-upload") {
                 fileOps.upload();
