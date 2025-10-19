@@ -28,6 +28,24 @@ class ConfigManager
         return self::$instance;
     }
 
+    /**
+     * 重置单例实例（用于测试或强制重新加载配置）
+     */
+    public static function resetInstance()
+    {
+        self::$instance = null;
+    }
+
+    /**
+     * 重新加载配置
+     */
+    public function reload()
+    {
+        $this->options = \Widget\Options::alloc();
+        $this->plugin = $this->options->plugin('TEMediaFolder');
+        $this->loadConfig();
+    }
+
     private function loadConfig()
     {
         $this->config = [
@@ -35,6 +53,7 @@ class ConfigManager
             'storage' => $this->getStringConfig('storage', 'local'),
             'maxPerMonth' => $this->getIntConfig('maxPerMonth', 200),
             'thumbSize' => $this->getIntConfig('thumb', 120),
+            'paginationRows' => $this->getIntConfig('paginationRows', 4),
             'extensions' => $this->getArrayConfig('extensions', ['jpg','jpeg','png','gif','webp','svg']),
             
             // COS配置
@@ -63,6 +82,14 @@ class ConfigManager
                 'token' => $this->getStringConfig('lskyToken', ''),
                 'albumId' => $this->getStringConfig('lskyAlbumId', ''),
                 'strategyId' => $this->getStringConfig('lskyStrategyId', ''),
+            ],
+            
+            // Upyun配置
+            'upyun' => [
+                'bucket' => $this->getStringConfig('upyunBucket', ''),
+                'operator' => $this->getStringConfig('upyunOperator', ''),
+                'password' => $this->getStringConfig('upyunPassword', ''),
+                'domain' => $this->getStringConfig('upyunDomain', ''),
             ],
 
             // WebP压缩配置
@@ -101,6 +128,11 @@ class ConfigManager
         return $this->config['lsky'];
     }
 
+    public function getUpyunConfig()
+    {
+        return $this->config['upyun'];
+    }
+
     /**
      * 检查指定存储类型是否已配置
      */
@@ -118,6 +150,10 @@ class ConfigManager
             case 'lsky':
                 $config = $this->getLskyConfig();
                 return !empty($config['url']) && !empty($config['token']);
+            
+            case 'upyun':
+                $config = $this->getUpyunConfig();
+                return !empty($config['bucket']) && !empty($config['operator']) && !empty($config['password']) && !empty($config['domain']);
             
             case 'local':
                 return true; // 本地存储总是可用
@@ -137,24 +173,21 @@ class ConfigManager
         if ($this->isStorageConfigured('local')) {
             $types[] = [
                 'key' => 'local',
-                'name' => '本地存储',
-                'icon' => '💻'
+                'name' => '本地存储'
             ];
         }
         
         if ($this->isStorageConfigured('cos')) {
             $types[] = [
                 'key' => 'cos',
-                'name' => '腾讯COS',
-                'icon' => '☁️'
+                'name' => '腾讯COS'
             ];
         }
         
         if ($this->isStorageConfigured('oss')) {
             $types[] = [
                 'key' => 'oss',
-                'name' => '阿里云OSS',
-                'icon' => '🌐'
+                'name' => '阿里云OSS'
             ];
         }
         
@@ -163,8 +196,14 @@ class ConfigManager
             $types[] = [
                 'key' => 'lsky',
                 'name' => '兰空图床',
-                'icon' => '🖼️',
                 'hasAlbumId' => !empty($lskyConfig['albumId'])
+            ];
+        }
+        
+        if ($this->isStorageConfigured('upyun')) {
+            $types[] = [
+                'key' => 'upyun',
+                'name' => '又拍云'
             ];
         }
         

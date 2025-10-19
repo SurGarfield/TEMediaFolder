@@ -4,14 +4,13 @@ namespace TypechoPlugin\TEMediaFolder\Services;
 
 use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
 
-class OssService
+class OssService extends BaseService
 {
-    private $config;
     private $ossConfig;
 
     public function __construct(ConfigManager $config)
     {
-        $this->config = $config;
+        parent::__construct($config);
         $this->ossConfig = $config->getOssConfig();
     }
 
@@ -62,28 +61,14 @@ class OssService
     public function uploadFile($filePath, $fileName, $targetPath = '')
     {
         if (!$this->isConfigured()) {
-            return ['ok' => false, 'msg' => 'Missing OSS config'];
+            return $this->buildUploadResult(false, '', '', ['msg' => 'Missing OSS config']);
         }
 
         try {
-            // 图片压缩处理（传递目标存储类型）
-            try {
-                if (class_exists('\\TypechoPlugin\\TEMediaFolder\\Core\\ImageCompressor')) {
-                    $compressionResult = \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::processImage($filePath, $fileName, 'oss');
-                    $processedFilePath = $compressionResult['path'];
-                    $isCompressed = $compressionResult['compressed'];
-                } else {
-                    // 压缩器类不存在时的降级处理
-                    $compressionResult = ['path' => $filePath, 'compressed' => false];
-                    $processedFilePath = $filePath;
-                    $isCompressed = false;
-                }
-            } catch (\Exception $e) {
-                // 压缩处理失败时的降级处理
-                $compressionResult = ['path' => $filePath, 'compressed' => false];
-                $processedFilePath = $filePath;
-                $isCompressed = false;
-            }
+            // 使用父类方法处理压缩
+            $compressionResult = $this->processImageCompression($filePath, $fileName, 'oss');
+            $processedFilePath = $compressionResult['path'];
+            $isCompressed = $compressionResult['compressed'];
             
             $fullPrefix = $this->buildPrefix($targetPath);
             // 使用压缩后文件名（如 .webp）
@@ -108,14 +93,14 @@ class OssService
 
             $publicUrl = $this->getPublicUrl($objectKey);
             
-            $result = ['ok' => true, 'url' => $publicUrl];
-            $result['thumbnail'] = $this->getThumbnailUrl($publicUrl);
+            // 构建返回结果
+            $options = ['thumbnail' => $this->getThumbnailUrl($publicUrl)];
             if ($isCompressed) {
-                $result['compressed'] = true;
-                $result['compression_info'] = $compressionResult;
+                $options['compressed'] = true;
+                $options['compression_info'] = $compressionResult;
             }
             
-            return $result;
+            return $this->buildUploadResult(true, $publicUrl, basename($processedFilePath), $options);
         } catch (\Exception $e) {
             return ['ok' => false, 'msg' => 'Upload failed'];
         }
@@ -169,26 +154,14 @@ class OssService
         return $this->getEndpoint() . '/' . ltrim($objectKey, '/');
     }
 
-    /**
-     * 检查是否为图片文件
-     */
-    private function isImageFile($fileName)
-    {
-        $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
-        $imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'];
-        return in_array($extension, $imageExtensions);
-    }
-
-    /**
-     * 获取OSS缩略图URL
-     * 使用阿里云图片处理服务
-     */
     private function getThumbnailUrl($originalUrl)
     {
         // 获取配置的缩略图尺寸
         $thumbSize = $this->config->get('thumbSize', 120);
-        // 阿里云OSS图片处理参数：先自适应缩放到合适大小，再居中裁剪成正方形
-        return $originalUrl . '?x-oss-process=image/resize,m_fill,w_' . $thumbSize . ',h_' . $thumbSize;
+   
+        return $originalUrl . '?x-oss-process=image/resize,m_fill,w_' . $thumbSize . ',h_' . $thumbSize
+            . '/quality,Q_75'
+            . '/format,webp';
     }
 
     private function generateAuthorization($method, $resource, $date, $contentType = '')

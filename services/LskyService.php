@@ -53,9 +53,7 @@ class LskyService
         return ['folders' => [], 'files' => $filteredFiles];
     }
 
-    /**
-     * 通用API调用方法，减少重复代码
-     */
+  
     private function tryApiEndpoints($endpoints, $queryParams = [])
     {
         $baseUrl = rtrim($this->lskyConfig['url'], '/');
@@ -81,9 +79,7 @@ class LskyService
         return null;
     }
 
-    /**
-     * 测试API连接和Token有效性
-     */
+  
     public function testConnection()
     {
         if (!$this->isConfigured()) {

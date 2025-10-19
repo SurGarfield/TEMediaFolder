@@ -1,10 +1,10 @@
 <?php
 
 /**
- * 媒体预览（支持本地、腾讯COS、阿里云OSS和兰空图床）
+ * 媒体预览（支持本地、腾讯COS、阿里云OSS、又拍云和兰空图床）
  * @package TEMediaFolder
  * @author 森木志
- * @version 2.3.1
+ * @version 3.0.0
  * @link https://oxxx.cn
  */
 
@@ -63,12 +63,15 @@ class Plugin implements PluginInterface
         \Utils\Helper::addAction('temf-cos-upload', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-oss-list', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-oss-upload', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-upyun-list', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-upyun-upload', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-lsky-list', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-lsky-upload', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-local-upload', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-storage-types', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-multi-list', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-multi-upload', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-test-upyun', 'TEMediaFolder_Action');
     }
 
     /**
@@ -82,12 +85,15 @@ class Plugin implements PluginInterface
             \Utils\Helper::removeAction('temf-cos-upload');
             \Utils\Helper::removeAction('temf-oss-list');
             \Utils\Helper::removeAction('temf-oss-upload');
+            \Utils\Helper::removeAction('temf-upyun-list');
+            \Utils\Helper::removeAction('temf-upyun-upload');
             \Utils\Helper::removeAction('temf-lsky-list');
             \Utils\Helper::removeAction('temf-lsky-upload');
             \Utils\Helper::removeAction('temf-local-upload');
             \Utils\Helper::removeAction('temf-storage-types');
             \Utils\Helper::removeAction('temf-multi-list');
             \Utils\Helper::removeAction('temf-multi-upload');
+            \Utils\Helper::removeAction('temf-test-upyun');
         }
     }
 

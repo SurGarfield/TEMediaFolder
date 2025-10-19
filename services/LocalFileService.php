@@ -4,15 +4,9 @@ namespace TypechoPlugin\TEMediaFolder\Services;
 
 use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
 
-class LocalFileService
+class LocalFileService extends BaseService
 {
-    private $config;
     private $fileGroups = null;
-
-    public function __construct(ConfigManager $config)
-    {
-        $this->config = $config;
-    }
 
     public function getFileGroups()
     {
@@ -152,20 +146,12 @@ class LocalFileService
         array_splice($array, $left, 0, [$item]);
     }
 
-    /**
-     * 性能优化：快速检查是否为图片扩展名
-     */
+ 
     private function isImageExtension($extension) {
-        static $imageExtensions = null;
-        if ($imageExtensions === null) {
-            $imageExtensions = array_flip(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
-        }
-        return isset($imageExtensions[strtolower($extension)]);
+        return $this->isImageFile('file.' . $extension);
     }
 
-    /**
-     * 获取文件列表 - 为多模式兼容
-     */
+  
     public function getFileList($path = '')
     {
         $groups = $this->getFileGroups();
@@ -190,59 +176,34 @@ class LocalFileService
             }
         }
         
-        // 返回与其他服务一致的格式
+        
         return [
             'ok' => true,
             'files' => $files,
-            'folders' => [] // 本地模式没有文件夹概念，返回空数组
+            'folders' => [] 
         ];
     }
 
-    /**
-     * 上传文件 - 多模式兼容
-     */
+    
     public function uploadFile($filePath, $fileName, $targetPath = '')
     {
         try {
-            // 检查文件是否存在
-            if (!file_exists($filePath) || !is_readable($filePath)) {
-                return ['ok' => false, 'msg' => 'Source file not found or not readable'];
+            // 使用父类方法验证文件
+            $validation = $this->validateUploadFile($filePath, $fileName);
+            if (!$validation['valid']) {
+                return $this->buildUploadResult(false, '', '', ['msg' => $validation['error']]);
             }
 
-            // 图片压缩处理
-            try {
-                if (class_exists('\\TypechoPlugin\\TEMediaFolder\\Core\\ImageCompressor')) {
-                    $compressionResult = \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::processImage($filePath, $fileName);
-                    $processedFilePath = $compressionResult['path'];
-                    $isCompressed = $compressionResult['compressed'];
-                } else {
-                    // 压缩器类不存在时的降级处理
-                    $compressionResult = ['path' => $filePath, 'compressed' => false];
-                    $processedFilePath = $filePath;
-                    $isCompressed = false;
-                }
-            } catch (\Exception $e) {
-                // 压缩处理失败时的降级处理
-                $compressionResult = ['path' => $filePath, 'compressed' => false];
-                $processedFilePath = $filePath;
-                $isCompressed = false;
-            }
-            
-            // 验证文件扩展名
-            $allowedExtensions = $this->config->get('extensions', ['jpg','jpeg','png','gif','webp','svg']);
-            $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
-            
-            if (!in_array($fileExtension, $allowedExtensions, true)) {
-                return ['ok' => false, 'msg' => 'File type not allowed'];
-            }
+            // 使用父类方法处理图片压缩
+            $compressionResult = $this->processImageCompression($filePath, $fileName);
+            $processedFilePath = $compressionResult['path'];
+            $isCompressed = $compressionResult['compressed'];
             
             // 检查文件大小（使用处理后的文件）
-            $maxSize = 10 * 1024 * 1024; // 10MB
             $fileSize = filesize($processedFilePath);
-            if ($fileSize > $maxSize) {
-                // 清理临时文件
-                \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::cleanupTempFile($processedFilePath);
-                return ['ok' => false, 'msg' => 'File too large'];
+            if ($fileSize > 10 * 1024 * 1024) {
+                $this->cleanupTempFile($processedFilePath);
+                return $this->buildUploadResult(false, '', '', ['msg' => 'File too large']);
             }
             
             // 准备目标目录
@@ -280,47 +241,37 @@ class LocalFileService
             
             // 复制文件（使用处理后的文件）
             if (!copy($processedFilePath, $targetFilePath)) {
-                // 清理临时文件
-                \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::cleanupTempFile($processedFilePath);
-                return ['ok' => false, 'msg' => 'Failed to copy uploaded file'];
-            }
-            
-            // 生成缩略图URL (仅对图片类型) - 使用URL参数
-            $thumbnailUrl = null;
-            if ($this->isImageFile($extension)) {
-                // 先生成文件URL用于创建缩略图URL
-                $uploadUrl = $this->config->getUploadUrl();
-                $fileUrl = rtrim($uploadUrl, '/') . '/' . $currentDate . '/' . $finalFileName;
-                $thumbnailUrl = $this->getThumbnailUrl($fileUrl);
+                $this->cleanupTempFile($processedFilePath);
+                return $this->buildUploadResult(false, '', '', ['msg' => 'Failed to copy uploaded file']);
             }
             
             // 生成文件URL
             $uploadUrl = $this->config->getUploadUrl();
             $fileUrl = rtrim($uploadUrl, '/') . '/' . $currentDate . '/' . $finalFileName;
             
+            // 生成缩略图URL (仅对图片类型)
+            $thumbnailUrl = null;
+            if ($this->isImageFile($extension)) {
+                $thumbnailUrl = $this->getThumbnailUrl($fileUrl);
+            }
+            
             // 添加到缓存
             $this->addFileWithSize($fileUrl, $finalFileName, time(), $fileSize, $thumbnailUrl);
             
             // 清理临时文件
-            \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::cleanupTempFile($processedFilePath);
+            $this->cleanupTempFile($processedFilePath);
             
-            $result = [
-                'ok' => true,
-                'url' => $fileUrl,
-                'name' => $finalFileName,
-                'size' => $fileSize
-            ];
-            
+            // 构建返回结果
+            $options = ['size' => $fileSize];
             if ($thumbnailUrl) {
-                $result['thumbnail'] = $thumbnailUrl;
+                $options['thumbnail'] = $thumbnailUrl;
             }
-            
             if ($isCompressed) {
-                $result['compressed'] = true;
-                $result['compression_info'] = $compressionResult;
+                $options['compressed'] = true;
+                $options['compression_info'] = $compressionResult;
             }
             
-            return $result;
+            return $this->buildUploadResult(true, $fileUrl, $finalFileName, $options);
             
         } catch (\Exception $e) {
             return ['ok' => false, 'msg' => 'Upload failed: ' . $e->getMessage()];
@@ -376,23 +327,7 @@ class LocalFileService
         krsort($this->fileGroups);
     }
 
-    /**
-     * 检查是否为图片文件
-     */
-    private function isImageFile($input)
-    {
-        // 如果输入包含路径分隔符或点，则视为文件名，否则视为扩展名
-        if (strpos($input, '/') !== false || strpos($input, '\\') !== false || strpos($input, '.') !== false) {
-            // 处理文件名
-            $extension = strtolower(pathinfo($input, PATHINFO_EXTENSION));
-        } else {
-            // 处理扩展名
-            $extension = strtolower($input);
-        }
-        
-        $imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'];
-        return in_array($extension, $imageExtensions);
-    }
+    // isImageFile 方法已移至 BaseService 父类
 
 
     /**

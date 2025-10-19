@@ -4,14 +4,13 @@ namespace TypechoPlugin\TEMediaFolder\Services;
 
 use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
 
-class CosService
+class CosService extends BaseService
 {
-    private $config;
     private $cosConfig;
 
     public function __construct(ConfigManager $config)
     {
-        $this->config = $config;
+        parent::__construct($config);
         $this->cosConfig = $config->getCosConfig();
     }
 
@@ -58,32 +57,19 @@ class CosService
     public function uploadFile($filePath, $fileName, $targetPath = '')
     {
         if (!$this->isConfigured()) {
-            return ['ok' => false, 'msg' => 'Missing COS config'];
+            return $this->buildUploadResult(false, '', '', ['msg' => 'Missing COS config']);
         }
 
         try {
-            if (!file_exists($filePath) || !is_readable($filePath)) {
-                return ['ok' => false, 'msg' => 'File not found or not readable'];
+            // 使用父类方法验证和压缩
+            $validation = $this->validateUploadFile($filePath, $fileName);
+            if (!$validation['valid']) {
+                return $this->buildUploadResult(false, '', '', ['msg' => $validation['error']]);
             }
             
-            // 图片压缩处理（传递目标存储类型）
-            try {
-                if (class_exists('\\TypechoPlugin\\TEMediaFolder\\Core\\ImageCompressor')) {
-                    $compressionResult = \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::processImage($filePath, $fileName, 'cos');
-                    $processedFilePath = $compressionResult['path'];
-                    $isCompressed = $compressionResult['compressed'];
-                } else {
-                    // 压缩器类不存在时的降级处理
-                    $compressionResult = ['path' => $filePath, 'compressed' => false];
-                    $processedFilePath = $filePath;
-                    $isCompressed = false;
-                }
-            } catch (\Exception $e) {
-                // 压缩处理失败时的降级处理
-                $compressionResult = ['path' => $filePath, 'compressed' => false];
-                $processedFilePath = $filePath;
-                $isCompressed = false;
-            }
+            $compressionResult = $this->processImageCompression($filePath, $fileName, 'cos');
+            $processedFilePath = $compressionResult['path'];
+            $isCompressed = $compressionResult['compressed'];
             
             // 使用压缩后的文件名（如 .webp）
             $safeFileName = $this->sanitizeFileName(basename($processedFilePath));
@@ -96,13 +82,12 @@ class CosService
             $encodedPath = '/' . implode('/', array_map('rawurlencode', explode('/', $objectKey)));
             $authorization = $this->generateAuthorization('PUT', $encodedPath, [], $host);
             
-            $url = $endpoint . $encodedPath;
+            $url = $endpoint . $encodedPath;            
             $body = file_get_contents($processedFilePath);
             
             if ($body === false) {
-                // 清理临时文件
-                \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::cleanupTempFile($processedFilePath);
-                return ['ok' => false, 'msg' => 'Failed to read file content'];
+                $this->cleanupTempFile($processedFilePath);
+                return $this->buildUploadResult(false, '', '', ['msg' => 'Failed to read file content']);
             }
             
             $response = $this->makeRequest($url, 'PUT', [
@@ -114,25 +99,20 @@ class CosService
 
             $publicUrl = $this->getPublicUrl($objectKey);
             
-            // 生成缩略图URL (仅对图片文件)
-            $thumbnailUrl = null;
-            if ($this->isImageFile($safeFileName)) {
-                $thumbnailUrl = $this->getThumbnailUrl($publicUrl);
-            }
-            
             // 清理临时文件
-            \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::cleanupTempFile($processedFilePath);
+            $this->cleanupTempFile($processedFilePath);
             
-            $result = ['ok' => true, 'url' => $publicUrl, 'name' => $safeFileName];
-            if ($thumbnailUrl) {
-                $result['thumbnail'] = $thumbnailUrl;
+            // 构建返回结果
+            $options = [];
+            if ($this->isImageFile($safeFileName)) {
+                $options['thumbnail'] = $this->getThumbnailUrl($publicUrl);
             }
             if ($isCompressed) {
-                $result['compressed'] = true;
-                $result['compression_info'] = $compressionResult;
+                $options['compressed'] = true;
+                $options['compression_info'] = $compressionResult;
             }
             
-            return $result;
+            return $this->buildUploadResult(true, $publicUrl, $safeFileName, $options);
         } catch (\Exception $e) {
             return ['ok' => false, 'msg' => 'Upload failed: ' . $e->getMessage()];
         }
@@ -170,26 +150,16 @@ class CosService
         return $this->getEndpoint() . '/' . ltrim($objectKey, '/');
     }
 
-    /**
-     * 检查是否为图片文件
-     */
-    private function isImageFile($fileName)
-    {
-        $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
-        $imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'];
-        return in_array($extension, $imageExtensions);
-    }
 
-    /**
-     * 获取COS缩略图URL
-     * 使用腾讯云数据处理服务
-     */
     private function getThumbnailUrl($originalUrl)
     {
         // 获取配置的缩略图尺寸
         $thumbSize = $this->config->get('thumbSize', 120);
-        // 腾讯云COS图片处理参数：居中裁剪成正方形缩略图
-        return $originalUrl . '?imageMogr2/crop/' . $thumbSize . 'x' . $thumbSize . '/gravity/center';
+ 
+        return $originalUrl . '?imageMogr2/crop/' . $thumbSize . 'x' . $thumbSize 
+            . '/gravity/center'
+            . '/rquality/75'
+            . '/format/webp';
     }
 
     private function generateAuthorization($method, $path, $query = [], $host = '')

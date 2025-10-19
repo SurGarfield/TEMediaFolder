@@ -33,8 +33,9 @@ class Renderer
     {
         $storage = $this->config->getStorage();
         $isMarkdown = $this->config->isMarkdownEnabled() ? '1' : '0';
+        $pluginUrl = \Widget\Options::alloc()->pluginUrl . '/TEMediaFolder';
 
-        echo '<section id="temediafolder" class="typecho-post-option" data-temf-md="' . $isMarkdown . '"';
+        echo '<section id="temediafolder" class="typecho-post-option" data-temf-md="' . $isMarkdown . '" data-plugin-url="' . htmlspecialchars($pluginUrl) . '"';
         
         if ($storage === 'cos') {
             $cosListUrl = \Widget\Security::alloc()->getIndex('/action/temf-cos-list');
@@ -51,6 +52,11 @@ class Renderer
             $lskyUploadUrl = \Widget\Security::alloc()->getIndex('/action/temf-lsky-upload');
             echo ' data-lsky-list="' . htmlspecialchars($lskyListUrl) . '"';
             echo ' data-lsky-upload="' . htmlspecialchars($lskyUploadUrl) . '"';
+        } elseif ($storage === 'upyun') {
+            $upyunListUrl = \Widget\Security::alloc()->getIndex('/action/temf-upyun-list');
+            $upyunUploadUrl = \Widget\Security::alloc()->getIndex('/action/temf-upyun-upload');
+            echo ' data-upyun-list="' . htmlspecialchars($upyunListUrl) . '"';
+            echo ' data-upyun-upload="' . htmlspecialchars($upyunUploadUrl) . '"';
         } elseif ($storage === 'multi') {
             $multiListUrl = \Widget\Security::alloc()->getIndex('/action/temf-multi-list');
             $multiUploadUrl = \Widget\Security::alloc()->getIndex('/action/temf-multi-upload');
@@ -97,7 +103,7 @@ class Renderer
             echo '<select id="temf-subdir" class="btn btn-xs" style="display:none;"></select>';
             echo '<select id="temf-year" class="btn btn-xs" style="display:none;"></select>';
             echo '<select id="temf-month" class="btn btn-xs" style="display:none;"></select>';
-        } else if ($storage === 'cos' || $storage === 'oss' || $storage === 'lsky') {
+        } else if ($storage === 'cos' || $storage === 'oss' || $storage === 'upyun' || $storage === 'lsky') {
             echo '<select id="temf-dir" class="btn btn-xs"></select>';
             echo '<select id="temf-subdir" class="btn btn-xs"></select>';
         } else {
@@ -131,6 +137,8 @@ class Renderer
             echo '<p class="description">' . _t('正在加载 OSS 列表...') . '</p>';
         } elseif ($storage === 'lsky') {
             echo '<p class="description">' . _t('正在加载兰空图床列表...') . '</p>';
+        } elseif ($storage === 'upyun') {
+            echo '<p class="description">' . _t('正在加载又拍云列表...') . '</p>';
         } else {
             $this->renderLocalFiles();
         }
@@ -212,9 +220,20 @@ class Renderer
         echo '.temf-meta{display:flex;flex-direction:column;gap:6px;padding:6px}';
         echo '.temf-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#666}';
         echo '.temf-actions{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}';
-        // 优化“插入所选”按钮的垂直对齐
+        // 图片懒加载样式 - loading.gif 在容器内居中显示 30px
+        echo '.temf-lazy-img{transition:opacity 0.3s ease-in-out}';
+        echo '.temf-lazy-img:not(.temf-loaded){width:30px !important;height:30px !important;max-width:30px !important;max-height:30px !important;object-fit:contain !important;left:50% !important;top:50% !important;transform:translate(-50%, -50%) !important;border:none !important}';
+        echo '.temf-lazy-img.temf-loading{opacity:1}';
+        echo '.temf-lazy-img.temf-loaded{width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;left:0 !important;top:0 !important;transform:none !important}';
+        // 优化"插入所选"按钮的垂直对齐
         echo '#temf-insert-selected{align-items:center;position:relative;top:-1px;margin-top:0px}';
         echo '.temf-check{margin-right:auto;font-size:12px;color:#666;display:flex;align-items:center;gap:4px}';
+        
+        // 分页控件样式 - 滚动到底部时显示
+        echo '.temf-pagination{display:none;align-items:center;justify-content:center;gap:12px;padding:12px;border-top:1px solid #e0e0e0;background:#fafafa;flex-shrink:0}';
+        echo '.temf-pagination .temf-page-info{font-size:13px;color:#666;min-width:100px;text-align:center}';
+        echo '.temf-pagination .btn{cursor:pointer}';
+        echo '.temf-pagination .btn:disabled{opacity:0.5;cursor:not-allowed}';
         
         echo '.temf-progress{display:none;align-items:center;gap:8px;margin-left:12px;flex:0 0 auto;max-width:280px}';
         echo '.temf-progress-counter{font-size:11px;color:#666;white-space:nowrap;min-width:35px}';
@@ -308,6 +327,7 @@ class Renderer
             'source' => $this->config->getStorage(),
             'thumbSize' => $this->config->get('thumbSize', 120),
             'lskyAlbumId' => $lskyConfig['albumId'] ?? '',
+            'paginationRows' => max(1, intval($this->config->get('paginationRows', 4))),
         ], JSON_UNESCAPED_UNICODE);
 
         echo '<script>var TEMF_CONF = ' . $conf . ';</script>';

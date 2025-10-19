@@ -2,16 +2,9 @@
 
 namespace TypechoPlugin\TEMediaFolder\Core;
 
-/**
- * 简化的图片压缩处理器 - 只保留WebP压缩功能
- * 兰空图床特别处理为JPG压缩
- */
+
 class ImageCompressor
 {
-    /**
-     * 计算并尽力保证足够内存以处理指定尺寸的图片。
-     * 返回是否认为内存充足（可能通过提升 memory_limit 实现）。
-     */
     private static function ensureMemoryForImage(int $width, int $height, float $safetyFactor = 2.0): bool
     {
         // 粗略估算：每像素按4~6字节计（GD内部RGBA+开销），再留出余量
@@ -51,13 +44,7 @@ class ImageCompressor
             default: return (int)$val;
         }
     }
-    /**
-     * 检测并处理图片压缩
-     * 
-     * @param string $filePath 原始文件路径
-     * @param string $fileName 文件名
-     * @return array 处理结果 ['path' => 处理后的文件路径, 'compressed' => 是否被压缩]
-     */
+
     public static function processImage($filePath, $fileName, $targetStorage = null)
     {
         // 快速检查
@@ -106,9 +93,7 @@ class ImageCompressor
         }
     }
 
-    /**
-     * 简化的WebP压缩处理
-     */
+
     private static function processWithWebP($filePath, $fileName, $targetStorage = null)
     {
         // 检查GD扩展和WebP支持
@@ -134,9 +119,7 @@ class ImageCompressor
         return $result;
     }
 
-    /**
-     * 兰空图床压缩处理（转换为JPG）
-     */
+
     private static function processLskyCompression($filePath, $fileName)
     {
         $config = ConfigManager::getInstance();

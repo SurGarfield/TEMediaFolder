@@ -13,6 +13,8 @@ class ConfigForm
         
         self::addOssConfig($form);
         
+        self::addUpyunConfig($form);
+        
         self::addLskyConfig($form);
         
         self::addAdvancedConfig($form);
@@ -146,12 +148,13 @@ class ConfigForm
                 'local' => _t('本地'), 
                 'cos' => _t('腾讯COS'), 
                 'oss' => _t('阿里云OSS'), 
+                'upyun' => _t('又拍云'),
                 'lsky' => _t('兰空图床'),
                 'multi' => _t('我全都要')
             ],
             'local',
             _t('存储方式'),
-            _t('选择图片来源：<br>• <strong>单一模式</strong>：本地上传目录、腾讯COS、阿里云OSS 或兰空图床<br>• <strong>我全都要</strong>：同时启用所有已配置的存储方式，可在素材库中动态切换<br><span style="color:#0073aa;font-size:12px;">提示：切换存储方式时，其他模式的配置会自动保留，不会丢失嘟</span>')
+            _t('选择图片来源：<br>• <strong>单一模式</strong>：本地上传目录、腾讯COS、阿里云OSS、又拍云 或兰空图床<br>• <strong>我全都要</strong>：同时启用所有已配置的存储方式，可在素材库中动态切换<br><span style="color:#0073aa;font-size:12px;">提示：切换存储方式时，其他模式的配置会自动保留，不会丢失嘟</span>')
         );
         $form->addInput($storage);
     }
@@ -286,6 +289,60 @@ class ConfigForm
         $form->addInput($ossDomain);
     }
     
+    private static function addUpyunConfig(\Typecho\Widget\Helper\Form $form)
+    {
+        // 生成测试 URL
+        $testUpyunUrl = \Widget\Security::alloc()->getIndex('/action/temf-test-upyun');
+        
+        echo '<div class="temf-upyun-desc" style="margin:8px 0; padding:10px; background:#f8f8f8; " data-test-upyun-url="' . htmlspecialchars($testUpyunUrl) . '">';
+        echo '<p style="margin:0 0 5px;">1. 登录 <a href="https://console.upyun.com" target="_blank">又拍云控制台</a></p>';
+        echo '<p style="margin:0 0 5px;">2. 创建云存储服务（选择"网页图片"）</p>';
+        echo '<p style="margin:0 0 5px;">3. 在"操作员授权"中创建操作员并授权</p>';
+        echo '<p style="margin:0;"><strong>注意：</strong>域名必须配置并已绑定加速域名</p>';
+        echo '</div>';
+        
+        $upyunBucket = new \Typecho\Widget\Helper\Form\Element\Text(
+            'upyunBucket',
+            null,
+            '',
+            _t('服务名称'),
+            _t('又拍云存储服务名称（即Bucket名称）')
+        );
+        $upyunBucket->setAttribute('class', 'temf-upyun-field');
+        $form->addInput($upyunBucket);
+        
+        $upyunOperator = new \Typecho\Widget\Helper\Form\Element\Text(
+            'upyunOperator',
+            null,
+            '',
+            _t('操作员账号'),
+            _t('授权的操作员账号名')
+        );
+        $upyunOperator->setAttribute('class', 'temf-upyun-field');
+        $form->addInput($upyunOperator);
+        
+        $upyunPassword = new \Typecho\Widget\Helper\Form\Element\Text(
+            'upyunPassword',
+            null,
+            '',
+            _t('操作员密码'),
+            _t('操作员的密码（明文保存，请注意安全），<button type="button" id="test-upyun-connection" class="btn btn-xs">测试连接</button>')
+        );
+        $upyunPassword->setAttribute('class', 'temf-upyun-field');
+        $upyunPassword->input->setAttribute('type', 'password');
+        $form->addInput($upyunPassword);
+        
+        $upyunDomain = new \Typecho\Widget\Helper\Form\Element\Text(
+            'upyunDomain',
+            null,
+            '',
+            _t('加速域名'),
+            _t('又拍云绑定的加速域名，例如: https://cdn.example.com （不带最后的斜杠）')
+        );
+        $upyunDomain->setAttribute('class', 'temf-upyun-field');
+        $form->addInput($upyunDomain);
+    }
+    
     private static function addLskyConfig(\Typecho\Widget\Helper\Form $form)
     {
         echo '<div class="temf-lsky-desc" style="margin:8px 0; padding:10px; background:#f8f8f8; ">';
@@ -339,14 +396,14 @@ class ConfigForm
     
     private static function addAdvancedConfig(\Typecho\Widget\Helper\Form $form)
     {
-        $maxPerMonth = new \Typecho\Widget\Helper\Form\Element\Text(
-            'maxPerMonth',
+        $paginationRows = new \Typecho\Widget\Helper\Form\Element\Text(
+            'paginationRows',
             null,
-            '200',
-            _t('设置最多显示数量'),
-            _t('防止过多文件造成页面卡顿，0 为不限制')
+            '4',
+            _t('每页显示行数'),
+            _t('设置每页显示的图片行数（默认4行）。实际显示数量 = 行数 × 每行图片数（自适应屏幕宽度）。<br><span style="color:#0073aa;">提示：行数越多，初始加载时间越长，建议3-6行</span>')
         );
-        $form->addInput($maxPerMonth);
+        $form->addInput($paginationRows);
         
         $thumb = new \Typecho\Widget\Helper\Form\Element\Text(
             'thumb',
@@ -401,6 +458,7 @@ class ConfigForm
 }
 .temf-oss-field, 
 .temf-cos-field,
+.temf-upyun-field,
 .temf-lsky-field {
     list-style-type: none;
     padding: 5px 0;
@@ -462,6 +520,7 @@ class ConfigForm
         
         var cosGroup = ensureGroup('.temf-cos-field', 'temf-cos-group', 'COS 配置', '.temf-cos-desc');
         var ossGroup = ensureGroup('.temf-oss-field', 'temf-oss-group', 'OSS 配置', '.temf-oss-desc');
+        var upyunGroup = ensureGroup('.temf-upyun-field', 'temf-upyun-group', '又拍云配置', '.temf-upyun-desc');
         var lskyGroup = ensureGroup('.temf-lsky-field', 'temf-lsky-group', '兰空图床配置', '.temf-lsky-desc');
         
         function toggle() {
@@ -475,9 +534,11 @@ class ConfigForm
             
             var cosInputs = document.querySelectorAll('.temf-cos-field');
             var ossInputs = document.querySelectorAll('.temf-oss-field');
+            var upyunInputs = document.querySelectorAll('.temf-upyun-field');
             var lskyInputs = document.querySelectorAll('.temf-lsky-field');
             var cosShow = (val === 'cos') || (val === 'multi');
             var ossShow = (val === 'oss') || (val === 'multi');
+            var upyunShow = (val === 'upyun') || (val === 'multi');
             var lskyShow = (val === 'lsky') || (val === 'multi');
             
             // 显示/隐藏配置组，但保持所有输入字段启用状态以确保数据提交
@@ -501,13 +562,23 @@ class ConfigForm
                 }
             }
             
-            for (var l = 0; l < lskyInputs.length; l++) {
-                var el3 = lskyInputs[l];
+            for (var l = 0; l < upyunInputs.length; l++) {
+                var el3 = upyunInputs[l];
                 var ul3 = el3.closest ? el3.closest('ul') : null;
                 if (ul3) {
-                    ul3.style.display = lskyShow ? '' : 'none';
+                    ul3.style.display = upyunShow ? '' : 'none';
                     // 确保隐藏的输入字段仍然可以提交
                     el3.disabled = false;
+                }
+            }
+            
+            for (var m = 0; m < lskyInputs.length; m++) {
+                var el4 = lskyInputs[m];
+                var ul4 = el4.closest ? el4.closest('ul') : null;
+                if (ul4) {
+                    ul4.style.display = lskyShow ? '' : 'none';
+                    // 确保隐藏的输入字段仍然可以提交
+                    el4.disabled = false;
                 }
             }
             
@@ -523,6 +594,13 @@ class ConfigForm
                 og.style.display = ossShow ? '' : 'none';
                 // 添加配置状态指示
                 updateConfigStatus(og, 'oss', ossShow);
+            }
+            
+            var ug = document.getElementById('temf-upyun-group');
+            if (ug) {
+                ug.style.display = upyunShow ? '' : 'none';
+                // 添加配置状态指示
+                updateConfigStatus(ug, 'upyun', upyunShow);
             }
             
             var lg = document.getElementById('temf-lsky-group');
@@ -592,6 +670,8 @@ class ConfigForm
                 fields = ['cosBucket', 'cosSecretId', 'cosSecretKey'];
             } else if (type === 'oss') {
                 fields = ['ossBucket', 'ossAccessKeyId', 'ossAccessKeySecret'];
+            } else if (type === 'upyun') {
+                fields = ['upyunBucket', 'upyunOperator', 'upyunPassword', 'upyunDomain'];
             } else if (type === 'lsky') {
                 fields = ['lskyUrl', 'lskyToken'];
             }
@@ -611,14 +691,14 @@ class ConfigForm
         if (form) {
             form.addEventListener('submit', function() {
                 // 确保所有隐藏的配置字段都被启用，以便提交
-                var allConfigInputs = document.querySelectorAll('.temf-cos-field, .temf-oss-field, .temf-lsky-field');
+                var allConfigInputs = document.querySelectorAll('.temf-cos-field, .temf-oss-field, .temf-upyun-field, .temf-lsky-field');
                 for (var i = 0; i < allConfigInputs.length; i++) {
                     allConfigInputs[i].disabled = false;
                 }
             });
         }
         
-        // 添加Token测试功能
+        // 添加兰空Token测试功能
         var testBtn = document.getElementById('test-lsky-token');
         if (testBtn) {
             testBtn.addEventListener('click', function() {
@@ -669,6 +749,91 @@ class ConfigForm
                     testBtn.disabled = false;
                     testBtn.textContent = '测试连接';
                     alert('网络错误！请检查兰空图床地址是否正确。\\n\\n错误: ' + error.message);
+                });
+            });
+        }
+        
+        // 添加又拍云测试连接功能
+        var testUpyunBtn = document.getElementById('test-upyun-connection');
+        if (testUpyunBtn) {
+            testUpyunBtn.addEventListener('click', function() {
+                var bucketField = document.querySelector('input[name="upyunBucket"]');
+                var operatorField = document.querySelector('input[name="upyunOperator"]');
+                var passwordField = document.querySelector('input[name="upyunPassword"]');
+                
+                if (!bucketField || !operatorField || !passwordField) return;
+                
+                var bucket = bucketField.value.trim();
+                var operator = operatorField.value.trim();
+                var password = passwordField.value.trim();
+                
+                if (!bucket || !operator || !password) {
+                    alert('请先填写完整的又拍云配置信息（服务名称、操作员账号、操作员密码）');
+                    return;
+                }
+                
+                testUpyunBtn.disabled = true;
+                testUpyunBtn.textContent = '测试中...';
+                
+                // 获取测试 URL
+                var upyunDesc = document.querySelector('.temf-upyun-desc');
+                var testUrl = upyunDesc ? upyunDesc.getAttribute('data-test-upyun-url') : '';
+                
+                if (!testUrl) {
+                    testUpyunBtn.disabled = false;
+                    testUpyunBtn.textContent = '测试连接';
+                    alert('错误：无法获取测试接口地址');
+                    return;
+                }
+                
+                // 使用 AJAX 调用后端测试接口
+                var testData = new FormData();
+                testData.append('bucket', bucket);
+                testData.append('operator', operator);
+                testData.append('password', password);
+                
+                fetch(testUrl, {
+                    method: 'POST',
+                    body: testData,
+                    credentials: 'same-origin'
+                })
+                .then(function(response) {
+                    // 检查响应的 Content-Type
+                    var contentType = response.headers.get('content-type');
+                    if (!contentType || contentType.indexOf('application/json') === -1) {
+                        throw new Error('服务器返回了非 JSON 响应，可能是权限错误或路由配置问题');
+                    }
+                    return response.json();
+                })
+                .then(function(result) {
+                    testUpyunBtn.disabled = false;
+                    testUpyunBtn.textContent = '测试连接';
+                    
+                    if (result.success) {
+                        alert('✅ 又拍云连接成功！\\n\\n' + result.message + '\\n\\n配置信息：\\n' +
+                              '• 服务名称：' + bucket + '\\n' +
+                              '• 操作员：' + operator + '\\n' +
+                              '• 权限：' + (result.permissions || '读取、写入'));
+                    } else {
+                        alert('❌ 又拍云连接失败！\\n\\n' + result.message + '\\n\\n' + 
+                              '请检查：\\n' +
+                              '1. 服务名称是否正确\\n' +
+                              '2. 操作员账号和密码是否匹配\\n' +
+                              '3. 操作员是否已授权到该服务\\n' +
+                              '4. 操作员是否有读取和写入权限');
+                    }
+                })
+                .catch(function(error) {
+                    testUpyunBtn.disabled = false;
+                    testUpyunBtn.textContent = '测试连接';
+                    alert('测试失败！\\n\\n' + error.message + '\\n\\n' +
+                          '可能的原因：\\n' +
+                          '1. 插件需要重新激活（禁用后重新启用）\\n' +
+                          '2. 路由配置有问题\\n' +
+                          '3. 权限不足\\n\\n' +
+                          '请尝试：\\n' +
+                          '• 禁用插件后重新启用\\n' +
+                          '• 检查 Typecho 是否开启了伪静态');
                 });
             });
         }
