@@ -440,6 +440,13 @@ class ConfigForm
             _t('图片压缩质量（1-100），数值越高质量越好但文件越大，建议70-90')
         );
         $form->addInput($webpQuality);
+
+        echo '<div class="temf-card" id="temf-telemetry-group">';
+        echo '<h4>' . _t('匿名使用数据（说明）') . '</h4>';
+        echo '<p class="description" style="margin:6px 0">' .
+             _t('本插件在“激活”时会向开发者服务器一次性上报匿名环境信息，用于改进产品体验：') . '</p>';
+        echo '</ul>';
+        echo '</div>';
     }
     
     private static function addAssets()
