@@ -5,7 +5,7 @@
  * @package TEMediaFolder
  * @author 森木志
  * @version 3.0.1
- * @link https://oxxx.cn
+ * @link https://github.com/SurGarfield/TEMediaFolder
  */
 
 namespace TypechoPlugin\TEMediaFolder;
@@ -61,48 +61,52 @@ class Plugin implements PluginInterface
     
         \Utils\Helper::addAction('temf-cos-list', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-cos-upload', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-cos-delete', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-cos-rename', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-oss-list', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-oss-upload', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-oss-delete', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-oss-rename', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-upyun-list', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-upyun-upload', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-upyun-delete', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-upyun-rename', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-lsky-list', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-lsky-upload', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-lsky-delete', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-local-upload', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-local-rename', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-local-delete', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-storage-types', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-multi-list', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-multi-upload', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-multi-rename', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-multi-delete', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-test-upyun', 'TEMediaFolder_Action');
 
-        // 一次性匿名激活上报（固定上报地址，隐藏字面值）
         try {
             $options = \Widget\Options::alloc();
-            // base64 隐藏字符串： https://oxxx.cn/index.php/action/infostat-report
             $endpoint = base64_decode('aHR0cHM6Ly9veHh4LmNuL2luZGV4LnBocC9hY3Rpb24vaW5mb3N0YXQtcmVwb3J0');
             if ($endpoint !== '') {
-                // 使用 options 持久化一个已上报标记，避免重复
                 $key = 'temf_telemetry_reported';
                 $has = $options->__get($key);
                 if (!$has) {
-                    // 生成不可逆唯一ID（站点URL + 安全盐）
                     $siteUrl = (string)($options->siteUrl ?? '');
                     $salt = (string)($options->secret ?? 'temf');
                     $uniqueId = hash('sha256', $siteUrl . '|' . $salt);
 
-                    // 检测 Typecho 版本（尽可能准确）
                     $typechoVersion = 'unknown';
                     if (defined('Typecho\\Common::VERSION')) {
                         $typechoVersion = (string) constant('Typecho\\Common::VERSION');
                     } elseif (defined('__TYPECHO_VERSION__')) {
                         $typechoVersion = (string) __TYPECHO_VERSION__;
                     } else {
-                        // 兜底：尝试从 options 中读取
                         try {
                             $ov = (string)($options->version ?? '');
                             if ($ov !== '') { $typechoVersion = $ov; }
                         } catch (\Exception $e) {}
                     }
 
-                    // 采集可匿名的环境字段（更健壮）
                     $ua = '';
                     if (!empty($_SERVER['HTTP_USER_AGENT'])) {
                         $ua = (string)$_SERVER['HTTP_USER_AGENT'];
@@ -125,7 +129,6 @@ class Plugin implements PluginInterface
                         }
                     } catch (\Exception $e) {}
 
-                    // 动态读取插件版本（从本文件头部 @version 提取）
                     $pluginVersion = 'unknown';
                     try {
                         $ref = new \ReflectionClass(__CLASS__);
@@ -170,7 +173,6 @@ class Plugin implements PluginInterface
                         }
                     }
                     if (!$sent) {
-                        // 回退：短超时的 file_get_contents，忽略错误
                         $ctx = stream_context_create([
                             'http' => [
                                 'method' => 'POST',
@@ -183,7 +185,6 @@ class Plugin implements PluginInterface
                         @file_get_contents($endpoint, false, $ctx);
                     }
 
-                    // 标记为已上报
                     $db = \Typecho\Db::get();
                     $prefix = $db->getPrefix();
                     try {
@@ -207,19 +208,27 @@ class Plugin implements PluginInterface
     public static function deactivate()
     {
       
-        if (class_exists('Utils\\Helper')) {
+        if (class_exists('Utils\Helper')) {
             \Utils\Helper::removeAction('temf-cos-list');
             \Utils\Helper::removeAction('temf-cos-upload');
+            \Utils\Helper::removeAction('temf-cos-delete');
             \Utils\Helper::removeAction('temf-oss-list');
             \Utils\Helper::removeAction('temf-oss-upload');
+            \Utils\Helper::removeAction('temf-oss-delete');
             \Utils\Helper::removeAction('temf-upyun-list');
             \Utils\Helper::removeAction('temf-upyun-upload');
+            \Utils\Helper::removeAction('temf-upyun-delete');
             \Utils\Helper::removeAction('temf-lsky-list');
             \Utils\Helper::removeAction('temf-lsky-upload');
+            \Utils\Helper::removeAction('temf-lsky-delete');
             \Utils\Helper::removeAction('temf-local-upload');
+            \Utils\Helper::removeAction('temf-local-rename');
+            \Utils\Helper::removeAction('temf-local-delete');
             \Utils\Helper::removeAction('temf-storage-types');
             \Utils\Helper::removeAction('temf-multi-list');
             \Utils\Helper::removeAction('temf-multi-upload');
+            \Utils\Helper::removeAction('temf-multi-rename');
+            \Utils\Helper::removeAction('temf-multi-delete');
             \Utils\Helper::removeAction('temf-test-upyun');
         }
     }

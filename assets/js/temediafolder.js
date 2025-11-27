@@ -28,6 +28,106 @@
             return null;
         }
     }
+
+    function getSelectHolder(id) {
+        var el = byId(id);
+        if (!el) return null;
+        if (typeof el.closest === 'function') {
+            return el.closest('.temf-select-holder');
+        }
+        return null;
+    }
+
+    function toggleDeleteButtons(showDelete) {
+        var buttons = document.querySelectorAll('[data-temf-copy]');
+        buttons.forEach(function(btn) {
+            var url = btn.getAttribute('data-url');
+            var shouldDelete = showDelete && url && state.selected.has(url);
+
+            if (shouldDelete) {
+                if (!btn.dataset.originalLabel) {
+                    btn.dataset.originalLabel = btn.textContent;
+                }
+                btn.textContent = '删除';
+                btn.classList.add('temf-delete-btn');
+                btn.setAttribute('data-temf-delete', 'true');
+            } else {
+                if (btn.dataset.originalLabel) {
+                    btn.textContent = btn.dataset.originalLabel;
+                }
+                btn.classList.remove('temf-delete-btn');
+                btn.removeAttribute('data-temf-delete');
+            }
+        });
+    }
+
+    function getMetaForUrl(url) {
+        if (!url) {
+            return {};
+        }
+
+        if (state.selectedMeta && state.selectedMeta.has(url)) {
+            return state.selectedMeta.get(url) || {};
+        }
+
+        var item = findItemByUrl(url);
+        if (item) {
+            var checkbox = item.querySelector('.temf-pick');
+            if (checkbox) {
+                return {
+                    id: checkbox.getAttribute('data-meta-id') || null
+                };
+            }
+        }
+
+        return {};
+    }
+
+    function performDelete(urls) {
+        if (!urls || urls.length === 0) {
+            return Promise.resolve({ ok: true });
+        }
+
+        var endpoint = getDeleteEndpoint(urls[0]);
+        if (!endpoint) {
+            return Promise.resolve({ ok: false, msg: '未配置删除接口' });
+        }
+
+        var body = new URLSearchParams();
+        if (endpoint.storage) {
+            body.append('storage_type', endpoint.storage);
+        }
+        urls.forEach(function(url, index) {
+            body.append('file_urls[]', url);
+            if (index === 0) {
+                body.append('file_url', url);
+            }
+            var meta = getMetaForUrl(url);
+            if (meta && meta.id) {
+                body.append('file_ids[]', meta.id);
+            }
+        });
+
+        return fetch(endpoint.url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+            },
+            credentials: 'same-origin',
+            body: body.toString()
+        }).then(function(res) {
+            return res.text().then(function(text) {
+                if (!text) {
+                    return { ok: false, msg: 'EMPTY_RESPONSE' };
+                }
+                try {
+                    return JSON.parse(text);
+                } catch (e) {
+                    return { ok: false, msg: 'INVALID_JSON:' + e.message };
+                }
+            });
+        });
+    }
     
     function insertAtCursor(field, text) {
         if (!field) {
@@ -46,15 +146,15 @@
             } else {
                 field.value += text;
             }
-            
-                field.dispatchEvent(new Event("input", {bubbles: true}));
+
+            field.dispatchEvent(new Event("input", {bubbles: true}));
             field.focus();
         } catch (e) {
             // insertAtCursor error
             // 降级处理：直接在末尾添加文本
             try {
-            field.value += text;
-            field.focus();
+                field.value += text;
+                field.focus();
             } catch (fallbackError) {
                 // insert fallback error
             }
@@ -74,6 +174,7 @@
         currentStorage: null,
         availableStorages: [],
         selected: new Set(),
+        selectedMeta: new Map(),
         // 请求缓存机制 - 避免重复请求
         requestCache: {},
         cacheTimeout: 5 * 60 * 1000, // 5分钟缓存
@@ -85,10 +186,387 @@
             allFiles: []   // 存储所有文件
         }
     };
-    
+
+    var customSelects = (function() {
+        var registry = new Map();
+
+        function closeAll(exceptId) {
+            registry.forEach(function(info, id) {
+                if (exceptId && id === exceptId) {
+                    return;
+                }
+                info.holder.classList.remove('open');
+                info.trigger.setAttribute('aria-expanded', 'false');
+            });
+        }
+
+        function focusOption(info, strategy) {
+            if (!info) return;
+            var options = Array.from(info.dropdown.querySelectorAll('.temf-select-option'));
+            if (!options.length) return;
+
+            var target = null;
+            if (strategy === 'selected') {
+                target = options.find(function(btn) { return btn.classList.contains('selected'); });
+            } else if (strategy === 'last') {
+                target = options[options.length - 1];
+            }
+            if (!target) {
+                target = options[0];
+            }
+            if (target && typeof target.focus === 'function') {
+                target.focus();
+            }
+        }
+
+        document.addEventListener('click', function(e) {
+            var target = e.target;
+            if (!target) {
+                closeAll();
+                return;
+            }
+            if (typeof target.closest !== 'function') {
+                closeAll();
+                return;
+            }
+            if (!target.closest('.temf-select-holder')) {
+                closeAll();
+            }
+        });
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeAll();
+            }
+        });
+
+        return {
+            initAll: function() {
+                var holders = document.querySelectorAll('.temf-select-holder');
+                holders.forEach(function(holder) {
+                    var select = holder.querySelector('select');
+                    if (!select || !select.id) {
+                        return;
+                    }
+                    this.initSelect(select);
+                    if (holder.getAttribute('data-initial-hidden') === 'true') {
+                        holder.classList.add('hidden');
+                        this.setDisabled(select.id, true);
+                    }
+                }, this);
+            },
+
+            initSelect: function(select) {
+                if (!select || !select.id || registry.has(select.id)) {
+                    return;
+                }
+
+                var holder = select.closest('.temf-select-holder');
+                if (!holder) {
+                    return;
+                }
+
+                var trigger = document.createElement('button');
+                trigger.type = 'button';
+                trigger.className = 'temf-select-trigger';
+                trigger.setAttribute('data-target', select.id);
+                trigger.setAttribute('aria-haspopup', 'listbox');
+                trigger.setAttribute('aria-expanded', 'false');
+                trigger.setAttribute('tabindex', '0');
+
+                var label = document.createElement('span');
+                label.className = 'temf-select-label';
+                label.textContent = '请选择';
+
+                var caret = document.createElement('span');
+                caret.className = 'temf-select-caret';
+
+                trigger.appendChild(label);
+                trigger.appendChild(caret);
+                holder.appendChild(trigger);
+
+                var dropdown = document.createElement('div');
+                dropdown.className = 'temf-select-dropdown';
+                dropdown.setAttribute('role', 'listbox');
+                holder.appendChild(dropdown);
+
+                var self = this;
+
+                trigger.addEventListener('click', function(ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    if (select.disabled) {
+                        return;
+                    }
+                    if (holder.classList.contains('open')) {
+                        self.close(select.id);
+                    } else {
+                        self.open(select.id);
+                    }
+                });
+
+                trigger.addEventListener('keydown', function(ev) {
+                    if (select.disabled) {
+                        return;
+                    }
+                    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+                        ev.preventDefault();
+                        self.open(select.id);
+                        focusOption(registry.get(select.id), ev.key === 'ArrowUp' ? 'last' : 'selected');
+                    } else if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault();
+                        self.open(select.id);
+                        focusOption(registry.get(select.id), 'selected');
+                    }
+                });
+
+                holder.addEventListener('keydown', function(ev) {
+                    if (!holder.classList.contains('open')) {
+                        return;
+                    }
+                    var info = registry.get(select.id);
+                    if (!info) return;
+
+                    var options = Array.from(info.dropdown.querySelectorAll('.temf-select-option'));
+                    if (!options.length) {
+                        return;
+                    }
+
+                    var currentIndex = options.indexOf(document.activeElement);
+                    if (ev.key === 'ArrowDown') {
+                        ev.preventDefault();
+                        var nextIndex = currentIndex >= 0 ? Math.min(currentIndex + 1, options.length - 1) : 0;
+                        options[nextIndex].focus();
+                    } else if (ev.key === 'ArrowUp') {
+                        ev.preventDefault();
+                        var prevIndex = currentIndex >= 0 ? Math.max(currentIndex - 1, 0) : options.length - 1;
+                        options[prevIndex].focus();
+                    } else if (ev.key === 'Home') {
+                        ev.preventDefault();
+                        options[0].focus();
+                    } else if (ev.key === 'End') {
+                        ev.preventDefault();
+                        options[options.length - 1].focus();
+                    } else if (ev.key === 'Enter' || ev.key === ' ') {
+                        if (document.activeElement && document.activeElement.classList.contains('temf-select-option')) {
+                            ev.preventDefault();
+                            document.activeElement.click();
+                        }
+                    } else if (ev.key === 'Escape') {
+                        ev.preventDefault();
+                        self.close(select.id);
+                        trigger.focus();
+                    }
+                });
+
+                registry.set(select.id, {
+                    select: select,
+                    holder: holder,
+                    trigger: trigger,
+                    label: label,
+                    dropdown: dropdown
+                });
+
+                this.sync(select.id);
+                this.setDisabled(select.id, select.disabled);
+            },
+
+            sync: function(id) {
+                var info = registry.get(id);
+                if (!info) {
+                    return;
+                }
+                var select = info.select;
+                var dropdown = info.dropdown;
+                dropdown.innerHTML = '';
+
+                var options = Array.from(select.options);
+                if (!options.length) {
+                    var empty = document.createElement('div');
+                    empty.className = 'temf-select-empty';
+                    empty.textContent = '暂无选项';
+                    dropdown.appendChild(empty);
+                } else {
+                    options.forEach(function(option) {
+                        var btn = document.createElement('button');
+                        btn.type = 'button';
+                        btn.className = 'temf-select-option';
+                        btn.setAttribute('data-value', option.value);
+                        btn.setAttribute('role', 'option');
+                        btn.setAttribute('tabindex', '-1');
+                        btn.textContent = option.textContent || option.value || '-';
+                        if (option.disabled) {
+                            btn.disabled = true;
+                            btn.setAttribute('aria-disabled', 'true');
+                        }
+                        if (option.selected) {
+                            btn.classList.add('selected');
+                        }
+                        btn.addEventListener('click', function(ev) {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            if (option.disabled || select.disabled) {
+                                return;
+                            }
+                            customSelects.selectOption(id, option.value, true);
+                        });
+                        dropdown.appendChild(btn);
+                    });
+                }
+
+                this.updateLabel(id);
+            },
+
+            updateLabel: function(id) {
+                var info = registry.get(id);
+                if (!info) {
+                    return;
+                }
+                var select = info.select;
+                var label = info.label;
+                var selectedOption = select.options[select.selectedIndex];
+                label.textContent = selectedOption ? (selectedOption.textContent || selectedOption.value || '请选择') : '请选择';
+
+                var buttons = info.dropdown.querySelectorAll('.temf-select-option');
+                buttons.forEach(function(btn) {
+                    var value = btn.getAttribute('data-value');
+                    var isSelected = selectedOption && value === selectedOption.value;
+                    btn.classList.toggle('selected', isSelected);
+                    if (isSelected) {
+                        btn.setAttribute('aria-selected', 'true');
+                    } else {
+                        btn.removeAttribute('aria-selected');
+                    }
+                });
+            },
+
+            selectOption: function(id, value, dispatchEvent) {
+                var info = registry.get(id);
+                if (!info) return;
+                var select = info.select;
+                var previous = select.value;
+                select.value = value;
+                this.updateLabel(id);
+                this.close(id);
+                if (dispatchEvent && previous !== value) {
+                    var evt = new Event('change', { bubbles: true });
+                    select.dispatchEvent(evt);
+                }
+            },
+
+            setValue: function(id, value, options) {
+                var info = registry.get(id);
+                if (!info) return;
+                var select = info.select;
+                var previous = select.value;
+                select.value = value;
+                this.updateLabel(id);
+                if (!(options && options.silent) && previous !== value) {
+                    var evt = new Event('change', { bubbles: true });
+                    select.dispatchEvent(evt);
+                }
+            },
+
+            setDisabled: function(id, disabled) {
+                var info = registry.get(id);
+                if (!info) return;
+                var isDisabled = !!disabled;
+                info.select.disabled = isDisabled;
+                info.holder.dataset.disabled = isDisabled ? 'true' : 'false';
+                info.trigger.setAttribute('aria-disabled', isDisabled ? 'true' : 'false');
+                if (isDisabled) {
+                    this.close(id);
+                }
+            },
+
+            open: function(id) {
+                var info = registry.get(id);
+                if (!info || info.select.disabled) return;
+                closeAll(id);
+                info.holder.classList.add('open');
+                info.trigger.setAttribute('aria-expanded', 'true');
+                focusOption(info, 'selected');
+            },
+
+            close: function(id) {
+                var info = registry.get(id);
+                if (!info) return;
+                info.holder.classList.remove('open');
+                info.trigger.setAttribute('aria-expanded', 'false');
+            },
+
+            closeAll: function() {
+                closeAll();
+            }
+        };
+    })();
+
+    function setSelectVisibility(id, visible) {
+        var holder = getSelectHolder(id);
+        if (!holder) return;
+        if (visible) {
+            holder.classList.remove('hidden');
+            customSelects.setDisabled(id, false);
+        } else {
+            holder.classList.add('hidden');
+            customSelects.setDisabled(id, true);
+        }
+    }
+
+    var deleteOps = {
+        running: false,
+        start: function(urls) {
+            if (this.running) {
+                return;
+            }
+            urls = urls && urls.length ? urls : Array.from(state.selected);
+            if (!urls || urls.length === 0) {
+                return;
+            }
+
+            if (!window.confirm('确定要删除选中的图片吗？此操作不可恢复。')) {
+                return;
+            }
+
+            this.running = true;
+            performDelete(urls)
+                .then(function(result) {
+                    if (!result || result.ok === false) {
+                        var msg = (result && result.msg) ? result.msg : '删除失败';
+                        window.alert(msg);
+                        return;
+                    }
+
+                    var removedSet = new Set(urls);
+                    state.pagination.allFiles = (state.pagination.allFiles || []).filter(function(file) {
+                        return !removedSet.has(file.url);
+                    });
+
+                    urls.forEach(function(url) {
+                        var item = findItemByUrl(url);
+                        if (item && item.parentNode) {
+                            item.parentNode.removeChild(item);
+                        }
+                        state.selected.delete(url);
+                        state.selectedMeta.delete(url);
+                        removeFromLocalData(url);
+                    });
+
+                    selection.updateButton();
+                    ui.renderCurrentPage();
+                })
+                .catch(function(err) {
+                    window.alert('删除失败: ' + (err && err.message ? err.message : err));
+                })
+                .finally(function() {
+                    deleteOps.running = false;
+                });
+        }
+    };
+
     // 暴露到全局作用域供调试使用
     window.TEMF_STATE = state;
-    
+
     /**
      * 防抖函数
      * 延迟执行函数，如果在延迟期间再次调用，则重新计时
@@ -198,6 +676,43 @@
         var pageSize = rows * cols;
         return Math.max(pageSize, 10); // 至少10张
     }
+
+    function findItemByUrl(url) {
+        if (!url) {
+            return null;
+        }
+        var nodes = document.querySelectorAll('.temf-item');
+        for (var i = 0; i < nodes.length; i++) {
+            if (nodes[i].getAttribute('data-url') === url) {
+                return nodes[i];
+            }
+        }
+        return null;
+    }
+
+    function removeFromLocalData(url) {
+        if (!url || !TEMF_CONF || !TEMF_CONF.data) {
+            return;
+        }
+        var yearKeys = Object.keys(TEMF_CONF.data);
+        for (var i = 0; i < yearKeys.length; i++) {
+            var year = yearKeys[i];
+            var monthMap = TEMF_CONF.data[year];
+            var months = Object.keys(monthMap);
+            for (var j = 0; j < months.length; j++) {
+                var month = months[j];
+                monthMap[month] = monthMap[month].filter(function(item) {
+                    return item.url !== url;
+                });
+                if (monthMap[month].length === 0) {
+                    delete monthMap[month];
+                }
+            }
+            if (Object.keys(monthMap).length === 0) {
+                delete TEMF_CONF.data[year];
+            }
+        }
+    }
     
     var modal = {
         open: function() {
@@ -270,6 +785,75 @@
         }
     };
     
+    function getDeleteEndpoint(url) {
+        var sec = byId('temediafolder');
+        if (!sec || !url) {
+            return null;
+        }
+
+        var source = TEMF_CONF.source;
+        if (source === 'multi') {
+            var storage = state.currentStorage;
+            if (!storage) {
+                return null;
+            }
+            if (!sec.getAttribute('data-multi-delete')) {
+                return null;
+            }
+            return {
+                url: sec.getAttribute('data-multi-delete'),
+                storage: storage
+            };
+        }
+
+        if (source === 'local') {
+            var localDelete = sec.getAttribute('data-local-delete');
+            if (!localDelete) {
+                return null;
+            }
+            return {
+                url: localDelete,
+                storage: 'local'
+            };
+        }
+
+        if (source === 'cos') {
+            var cosDelete = sec.getAttribute('data-cos-delete');
+            if (cosDelete) {
+                return {
+                    url: cosDelete,
+                    storage: 'cos'
+                };
+            }
+        } else if (source === 'oss') {
+            var ossDelete = sec.getAttribute('data-oss-delete');
+            if (ossDelete) {
+                return {
+                    url: ossDelete,
+                    storage: 'oss'
+                };
+            }
+        } else if (source === 'upyun') {
+            var upyunDelete = sec.getAttribute('data-upyun-delete');
+            if (upyunDelete) {
+                return {
+                    url: upyunDelete,
+                    storage: 'upyun'
+                };
+            }
+        } else if (source === 'lsky') {
+            var lskyDelete = sec.getAttribute('data-lsky-delete');
+            if (lskyDelete) {
+                return {
+                    url: lskyDelete,
+                    storage: 'lsky'
+                };
+            }
+        }
+
+        return null;
+    }
+
     var local = {
         buildYearMonth: function() {
             try {
@@ -304,15 +888,16 @@
                 opt.textContent = year;
                 ySel.appendChild(opt);
             });
+            customSelects.sync('temf-year');
             
             var latest = TEMF_CONF.latest ? TEMF_CONF.latest.split('-') : null;
             var curYear = latest ? latest[0] : years[0];
-            ySel.value = curYear;
+            customSelects.setValue('temf-year', curYear, { silent: true });
             
             this.buildMonths(curYear);
             
                 if (latest && latest.length > 1) {
-                mSel.value = latest[1];
+                customSelects.setValue('temf-month', latest[1], { silent: true });
                 }
             } catch (e) {
                 // build selectors error
@@ -332,6 +917,8 @@
                 opt.textContent = month;
                 mSel.appendChild(opt);
             });
+
+            customSelects.sync('temf-month');
         },
         
         renderCurrentMonth: function() {
@@ -496,6 +1083,7 @@
             
             this.fetch(fetchPath, function(data) {
                 ui.renderFiles(data.files || []);
+                customSelects.sync('temf-dir');
             });
         },
         
@@ -693,7 +1281,8 @@
                                 dir.appendChild(opt);
                             });
                         }
-                        
+                        customSelects.sync('temf-dir');
+                        customSelects.sync('temf-subdir');
                         ui.renderFiles(data.files || []);
                         multi.finishSwitchAnimation();
                     });
@@ -706,6 +1295,10 @@
             if (body) {
                 body.classList.remove('temf-content-switching');
                 body.classList.add('temf-content-switched');
+                var overlay = body.querySelector('.temf-switching-overlay');
+                if (overlay && overlay.parentNode) {
+                    overlay.parentNode.removeChild(overlay);
+                }
                 setTimeout(function() {
                     body.classList.remove('temf-content-switched');
                 }, 200);
@@ -727,35 +1320,30 @@
                 optRoot2.value = '';
                 optRoot2.textContent = '/';
                 sub.appendChild(optRoot2);
+
+                customSelects.sync('temf-dir');
+                customSelects.sync('temf-subdir');
             }
         },
         
         showDirectorySelectors: function() {
-            var dir = byId('temf-dir');
-            var sub = byId('temf-subdir');
-            if (dir) dir.style.display = '';
-            if (sub) sub.style.display = '';
+            setSelectVisibility('temf-dir', true);
+            setSelectVisibility('temf-subdir', true);
         },
         
         hideDirectorySelectors: function() {
-            var dir = byId('temf-dir');
-            var sub = byId('temf-subdir');
-            if (dir) dir.style.display = 'none';
-            if (sub) sub.style.display = 'none';
+            setSelectVisibility('temf-dir', false);
+            setSelectVisibility('temf-subdir', false);
         },
         
         showLocalSelectors: function() {
-            var year = byId('temf-year');
-            var month = byId('temf-month');
-            if (year) year.style.display = '';
-            if (month) month.style.display = '';
+            setSelectVisibility('temf-year', true);
+            setSelectVisibility('temf-month', true);
         },
         
         hideLocalSelectors: function() {
-            var year = byId('temf-year');
-            var month = byId('temf-month');
-            if (year) year.style.display = 'none';
-            if (month) month.style.display = 'none';
+            setSelectVisibility('temf-year', false);
+            setSelectVisibility('temf-month', false);
         },
         
         initLskySelectors: function() {
@@ -763,7 +1351,7 @@
             var sub = byId('temf-subdir');
             
             if (dir) {
-                dir.style.display = '';
+                setSelectVisibility('temf-dir', true);
                 dir.innerHTML = '';
                 
                 // 添加"全部"选项
@@ -781,14 +1369,15 @@
                     dir.appendChild(optAlbum);
                     
                     // 如果配置了相册ID，默认选中相册
-                    dir.value = 'album';
+                    customSelects.setValue('temf-dir', 'album', { silent: true });
+                } else {
+                    customSelects.setValue('temf-dir', '', { silent: true });
                 }
+                customSelects.sync('temf-dir');
             }
             
             // 隐藏子目录选择器
-            if (sub) {
-                sub.style.display = 'none';
-            }
+            setSelectVisibility('temf-subdir', false);
         },
         
         hasLskyAlbumConfig: function() {
@@ -895,21 +1484,24 @@
         fetch: function(path, callback) {
             var sec = byId('temediafolder');
             if (!sec || !state.currentStorage) return;
-            
+
             var base = sec.getAttribute('data-multi-list');
             if (!base) return;
-            
+
             var url = base;
-            url += (base.indexOf('?') >= 0 ? '&' : '?') + 'storage_type=' + encodeURIComponent(state.currentStorage);
-            
-            // 处理兰空图床的特殊参数
+            var hasQuery = base.indexOf('?') >= 0;
+
+            var params = [];
+            params.push('storage_type=' + encodeURIComponent(state.currentStorage));
+
             if (state.currentStorage === 'lsky' && path === 'album') {
-                // 使用相册ID参数
-                url += '&use_album=1';
+                params.push('use_album=1');
             } else if (path) {
-                url += '&temf_path=' + encodeURIComponent(path);
+                params.push('temf_path=' + encodeURIComponent(path));
             }
-            
+
+            url += (hasQuery ? '&' : '?') + params.join('&');
+
             cachedFetch(url)
                 .then(function(data) {
                     callback && callback(data);
@@ -920,6 +1512,433 @@
         }
     };
     
+    var rename = {
+        active: null,
+        start: function(nameSpan) {
+            if (!nameSpan || nameSpan.classList.contains('editing')) {
+                return;
+            }
+
+            var item = nameSpan.closest('.temf-item');
+            if (!item) {
+                return;
+            }
+
+            var currentText = nameSpan.dataset.fullName || nameSpan.textContent || '';
+            if (!currentText) {
+                currentText = nameSpan.textContent || '';
+            }
+            var lastDot = currentText.lastIndexOf('.');
+            var base = lastDot > 0 ? currentText.slice(0, lastDot) : currentText;
+            var extension = lastDot > 0 ? currentText.slice(lastDot) : '';
+
+            nameSpan.dataset.originalName = currentText;
+            nameSpan.classList.add('editing', 'temf-name-editing');
+            nameSpan.textContent = '';
+
+            var editor = document.createElement('div');
+            editor.className = 'temf-rename-editor';
+
+            var input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'temf-rename-input';
+            input.value = base;
+            input.setAttribute('aria-label', '重命名');
+
+            var hint = document.createElement('div');
+            hint.className = 'temf-rename-hint';
+            hint.style.display = 'none';
+            editor.appendChild(input);
+            nameSpan.appendChild(editor);
+            nameSpan.appendChild(hint);
+
+            input.focus();
+            input.select();
+
+            var objectId = null;
+            var checkbox = item.querySelector('.temf-pick');
+            if (checkbox) {
+                objectId = checkbox.getAttribute('data-meta-id') || null;
+            }
+
+            if (!objectId) {
+                var files = state.pagination && Array.isArray(state.pagination.allFiles) ? state.pagination.allFiles : [];
+                var match = files.find(function(file) { return file.url === item.getAttribute('data-url'); });
+                if (match && match.id != null) {
+                    objectId = String(match.id);
+                }
+            }
+
+            var self = this;
+            input.addEventListener('keydown', function(ev) {
+                if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    self.commit();
+                } else if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    self.cancel();
+                }
+            });
+
+            input.addEventListener('blur', function() {
+                setTimeout(function() {
+                    if (self.active && self.active.input === input) {
+                        self.cancel();
+                    }
+                }, 120);
+            });
+
+            this.active = {
+                item: item,
+                span: nameSpan,
+                input: input,
+                hint: hint,
+                extension: extension,
+                oldUrl: item.getAttribute('data-url') || '',
+                originalName: currentText,
+                objectId: objectId
+            };
+        },
+        cancel: function(silent) {
+            if (!this.active) return;
+
+            var span = this.active.span;
+            if (span) {
+                span.classList.remove('editing', 'temf-name-editing');
+                span.classList.remove('temf-rename-success');
+                span.textContent = this.active.originalName;
+                span.removeAttribute('data-original-name');
+            }
+
+            this.active = null;
+
+            if (!silent) {
+                selection.updateButton();
+            }
+        },
+        showError: function(message) {
+            if (!this.active) return;
+            var hint = this.active.hint;
+            var input = this.active.input;
+            if (hint) {
+                hint.textContent = message || '重命名失败';
+                hint.style.display = 'block';
+            }
+            if (input) {
+                input.classList.add('has-error');
+            }
+        },
+        hideError: function() {
+            if (!this.active) return;
+            var hint = this.active.hint;
+            var input = this.active.input;
+            if (hint) {
+                hint.style.display = 'none';
+            }
+            if (input) {
+                input.classList.remove('has-error');
+            }
+        },
+        commit: function() {
+            if (!this.active) return;
+
+            var input = this.active.input;
+            var baseName = input.value.trim();
+            if (baseName === '') {
+                this.showError('文件名不能为空');
+                return;
+            }
+
+            var originalName = this.active.originalName;
+            var extension = this.active.extension || '';
+            if (baseName + extension === originalName) {
+                this.cancel();
+                return;
+            }
+
+            var endpointInfo = this.getRenameEndpoint();
+            if (!endpointInfo.supported) {
+                this.showError(endpointInfo.message || '当前存储不支持重命名');
+                return;
+            }
+
+            this.hideError();
+            input.disabled = true;
+
+            var self = this;
+            fetch(endpointInfo.url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                credentials: 'same-origin',
+                body: endpointInfo.body(baseName, this.active)
+            })
+            .then(function(res) {
+                return res.text().then(function(text) {
+                    var data = null;
+                    if (text) {
+                        try {
+                            data = JSON.parse(text);
+                        } catch (parseErr) {
+                            throw new Error('INVALID_JSON:' + parseErr.message);
+                        }
+                    }
+                    if (!data) {
+                        throw new Error('EMPTY_RESPONSE');
+                    }
+                    return data;
+                });
+            })
+            .then(function(result) {
+                if (!result || result.ok === false) {
+                    self.showError(result && result.msg ? result.msg : '重命名失败');
+                    input.disabled = false;
+                    input.focus();
+                    input.select();
+                    return;
+                }
+                self.applySuccess(result);
+            })
+            .catch(function(err) {
+                console.error('[TEMF] Rename failed', err);
+                var msg = '重命名请求失败';
+                if (err && typeof err.message === 'string') {
+                    if (err.message.indexOf('INVALID_JSON') === 0 || err.message === 'EMPTY_RESPONSE') {
+                        msg = '重命名接口返回数据异常';
+                    }
+                }
+                self.showError(msg);
+                input.disabled = false;
+                input.focus();
+            });
+        },
+        getRenameEndpoint: function() {
+            if (!this.active) {
+                return { supported: false };
+            }
+
+            var sec = byId('temediafolder');
+            if (!sec) {
+                return { supported: false, message: '缺少配置' };
+            }
+
+            var oldUrl = this.active.oldUrl;
+            if (!oldUrl) {
+                return { supported: false, message: '无效的文件地址' };
+            }
+
+            var source = TEMF_CONF.source;
+            if (source === 'local') {
+                var localRename = sec.getAttribute('data-local-rename');
+                if (!localRename) {
+                    return { supported: false, message: '未配置重命名接口' };
+                }
+                return {
+                    supported: true,
+                    url: localRename,
+                    body: function(baseName, active) {
+                        return new URLSearchParams({
+                            file_url: oldUrl,
+                            new_name: baseName
+                        }).toString();
+                    }
+                };
+            }
+
+            if (source === 'cos' || source === 'oss' || source === 'upyun') {
+                var singleRename = sec.getAttribute('data-' + source + '-rename');
+                if (!singleRename) {
+                    return { supported: false, message: '未配置重命名接口' };
+                }
+                return {
+                    supported: true,
+                    url: singleRename,
+                    body: function(baseName, active) {
+                        var params = new URLSearchParams({
+                            file_url: oldUrl,
+                            new_name: baseName
+                        });
+                        if (active && active.objectId) {
+                            params.append('file_id', active.objectId);
+                        }
+                        return params.toString();
+                    }
+                };
+            }
+
+            if (source === 'multi') {
+                var currentStorage = state.currentStorage;
+                if (!currentStorage) {
+                    return { supported: false, message: '请先选择存储类型' };
+                }
+                var multiRename = sec.getAttribute('data-multi-rename');
+                if (!multiRename) {
+                    return { supported: false, message: '未配置重命名接口' };
+                }
+                if (['local', 'cos', 'oss', 'upyun'].indexOf(currentStorage) === -1) {
+                    return { supported: false, message: '当前存储暂不支持重命名' };
+                }
+                return {
+                    supported: true,
+                    url: multiRename,
+                    body: function(baseName, active) {
+                        var params = new URLSearchParams({
+                            storage_type: currentStorage,
+                            file_url: oldUrl,
+                            new_name: baseName
+                        });
+                        if (active && active.objectId) {
+                            params.append('file_id', active.objectId);
+                        }
+                        return params.toString();
+                    }
+                };
+            }
+
+            return { supported: false, message: '当前存储暂不支持重命名' };
+        },
+        applySuccess: function(result) {
+            if (!this.active) return;
+
+            var active = this.active;
+            var item = active.item;
+            var span = active.span;
+            var oldUrl = active.oldUrl;
+            var newUrl = result.url || oldUrl;
+            var newName = result.name || (active.input.value.trim() + (active.extension || ''));
+            var displayName = newName;
+            var lastDot = newName.lastIndexOf('.');
+            if (lastDot > 0) {
+                displayName = newName.slice(0, lastDot);
+            }
+
+            item.setAttribute('data-url', newUrl);
+            if (typeof result.directory === 'string') {
+                var normalizedResultDirectory = result.directory ? result.directory.replace(/^\/+|\/+$/g, '') : '';
+                item.setAttribute('data-directory', normalizedResultDirectory);
+            }
+
+            var checkbox = item.querySelector('.temf-pick');
+            if (checkbox) {
+                checkbox.value = newUrl;
+                if (result.id != null) {
+                    checkbox.setAttribute('data-meta-id', result.id);
+                } else if (active.objectId) {
+                    checkbox.setAttribute('data-meta-id', active.objectId);
+                }
+            }
+
+            var img = item.querySelector('.temf-thumb img');
+            if (img) {
+                if (img.dataset) {
+                    img.dataset.original = newUrl;
+                    if (img.dataset.thumbnail !== undefined) {
+                        img.dataset.thumbnail = newUrl;
+                    }
+                    if (img.dataset.src !== undefined) {
+                        img.dataset.src = newUrl;
+                    }
+                }
+                if (img.src && img.src === oldUrl) {
+                    img.src = newUrl;
+                }
+            }
+
+            var insertBtn = item.querySelector('[data-temf-insert]');
+            if (insertBtn) {
+                insertBtn.setAttribute('data-url', newUrl);
+            }
+            var copyBtn = item.querySelector('[data-temf-copy]');
+            if (copyBtn) {
+                copyBtn.setAttribute('data-url', newUrl);
+            }
+
+            if (span) {
+                var editorNode = span.querySelector('.temf-rename-editor');
+                if (editorNode && editorNode.parentNode) {
+                    editorNode.parentNode.removeChild(editorNode);
+                }
+
+                var hintNode = this.active.hint;
+                if (hintNode && hintNode.parentNode) {
+                    hintNode.parentNode.removeChild(hintNode);
+                }
+
+                span.textContent = displayName;
+                span.title = displayName;
+                span.classList.remove('temf-name-editing');
+                span.classList.add('temf-rename-success');
+                span.setAttribute('data-full-name', newName);
+            }
+
+            var directoryValue = typeof result.directory === 'string'
+                ? result.directory
+                : (item.getAttribute('data-directory') || '');
+            var normalizedDir = directoryValue ? directoryValue.replace(/^\/+|\/+$/g, '') : '';
+            var displayDirectory = normalizedDir ? '/' + normalizedDir : '/';
+            var directorySpan = item.querySelector('.temf-directory');
+            if (directorySpan) {
+                directorySpan.textContent = displayDirectory;
+                directorySpan.setAttribute('title', displayDirectory);
+                directorySpan.setAttribute('data-directory', normalizedDir);
+            }
+
+            var files = state.pagination.allFiles || [];
+            var index = files.findIndex(function(file) { return file.url === oldUrl; });
+            if (index !== -1) {
+                files[index] = Object.assign({}, files[index], {
+                    url: newUrl,
+                    name: newName,
+                    thumbnail: result.thumbnail || files[index].thumbnail,
+                    directory: normalizedDir,
+                    id: result.id != null ? result.id : files[index].id
+                });
+            }
+
+            if (TEMF_CONF.source === 'local' && TEMF_CONF.data) {
+                var yearSel = byId('temf-year');
+                var monthSel = byId('temf-month');
+                if (yearSel && monthSel && yearSel.value && monthSel.value) {
+                    var year = yearSel.value;
+                    var month = monthSel.value;
+                    if (TEMF_CONF.data[year] && Array.isArray(TEMF_CONF.data[year][month])) {
+                        var monthFiles = TEMF_CONF.data[year][month];
+                        for (var i = 0; i < monthFiles.length; i++) {
+                            if (monthFiles[i].url === oldUrl) {
+                                monthFiles[i] = Object.assign({}, monthFiles[i], {
+                                    url: newUrl,
+                                    name: newName
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (state.selected.has(oldUrl)) {
+                var meta = state.selectedMeta.get(oldUrl) || {};
+                if (result.id != null) {
+                    meta.id = result.id;
+                } else if (active.objectId && !meta.id) {
+                    meta.id = active.objectId;
+                }
+                state.selected.delete(oldUrl);
+                state.selected.add(newUrl);
+                state.selectedMeta.delete(oldUrl);
+                state.selectedMeta.set(newUrl, meta);
+            }
+
+            this.active = null;
+            selection.updateButton();
+
+            setTimeout(function() {
+                span.classList.remove('temf-rename-success');
+            }, 1200);
+        }
+    };
+
     var ui = {
         renderFiles: function(files) {
             var body = document.querySelector('#temf-modal .temf-body');
@@ -968,6 +1987,9 @@
             var pageFiles = files.slice(startIndex, endIndex);
             
             // 清空并创建网格
+            if (rename && typeof rename.cancel === 'function') {
+                rename.cancel(true);
+            }
             var fragment = document.createDocumentFragment();
             var grid = document.createElement('ul');
             grid.className = 'temf-grid';
@@ -1005,6 +2027,7 @@
             var url = item.url || '';
             var thumbnail = this.getThumbnailUrl(item); // 智能获取缩略图URL
             var name = item.name || 'unknown';
+            var directory = typeof item.directory === 'string' ? item.directory : '';
             
             function escapeHtml(text) {
                 var div = document.createElement('div');
@@ -1014,25 +2037,37 @@
             
             var safeUrl = escapeHtml(url);
             var safeThumbnail = escapeHtml(thumbnail);
-            var safeName = escapeHtml(name);
+            var safeNameFull = escapeHtml(name);
+            var normalizedDirectory = directory ? directory.replace(/^\/+|\/+$/g, '') : '';
+            var safeDirectoryValue = escapeHtml(normalizedDirectory);
+            var displayName = safeNameFull;
+            var lastDot = name.lastIndexOf('.');
+            if (lastDot > 0) {
+                displayName = escapeHtml(name.slice(0, lastDot));
+            }
             
+            var directoryDisplay = normalizedDirectory ? '/' + normalizedDirectory : '/';
+            var safeDirectoryDisplay = escapeHtml(directoryDisplay);
+
             // 获取 loading.gif 路径
             var loadingGif = this.getLoadingGifUrl();
+            var safeLoader = escapeHtml(loadingGif);
             
             // 优化图片加载：使用loading.gif作为占位图，通过Intersection Observer进行懒加载
-            return '<li class="temf-item" data-url="' + safeUrl + '">' +
+            return '<li class="temf-item" data-url="' + safeUrl + '" data-directory="' + safeDirectoryValue + '">' +
                 '<div class="temf-thumb">' +
-                '<input type="checkbox" class="temf-pick" value="' + safeUrl + '">' +
-                '<img src="' + loadingGif + '" data-src="' + thumbnail + '" alt="' + safeName + '" ' +
+                '<input type="checkbox" class="temf-pick" value="' + safeUrl + '" data-meta-id="' + (item.id != null ? String(item.id).replace(/"/g, '&quot;') : '') + '">' +
+                '<img src="' + safeLoader + '" data-src="' + safeThumbnail + '" alt="' + safeNameFull + '" ' +
                 'class="temf-lazy-img" referrerpolicy="no-referrer" decoding="async" ' +
-                'data-original="' + safeUrl + '" data-thumbnail="' + safeThumbnail + '" ' +
+                'data-original="' + safeUrl + '" data-thumbnail="' + safeThumbnail + '" data-loader="' + safeLoader + '" ' +
                 'onerror="this.src=\'' + safeUrl + '\';this.onerror=null;"/>' +
                 '</div>' +
                 '<div class="temf-meta">' +
-                '<span class="temf-name" title="' + safeName + '">' + safeName + '</span>' +
+                '<span class="temf-name" data-full-name="' + safeNameFull + '" title="' + displayName + '">' + displayName + '</span>' +
+                '<span class="temf-directory" data-directory="' + safeDirectoryValue + '" title="' + safeDirectoryDisplay + '">' + safeDirectoryDisplay + '</span>' +
                 '<div class="temf-actions">' +
-                '<button type="button" class="btn btn-xs" data-temf-insert data-url="' + safeUrl + '">插入</button>' +
-                '<button type="button" class="btn btn-xs" data-temf-copy data-url="' + safeUrl + '">复制</button>' +
+                '<button type="button" class="btn btn-xs temf-action-btn" data-temf-insert data-url="' + safeUrl + '">插入</button>' +
+                '<button type="button" class="btn btn-xs temf-action-btn" data-temf-copy data-url="' + safeUrl + '">复制</button>' +
                 '</div>' +
                 '</div>' +
                 '</li>';
@@ -1190,16 +2225,19 @@
     var selection = {
         clear: function() {
             state.selected.clear();
+            state.selectedMeta.clear();
             this.updateButton();
         },
         
-        add: function(url) {
+        add: function(url, meta) {
             state.selected.add(url);
+            state.selectedMeta.set(url, meta || {});
             this.updateButton();
         },
         
         remove: function(url) {
             state.selected.delete(url);
+            state.selectedMeta.delete(url);
             this.updateButton();
         },
         
@@ -1208,6 +2246,7 @@
             if (!btn) return;
             
             btn.disabled = state.selected.size === 0;
+            toggleDeleteButtons(state.selected.size > 0);
         }
     };
     
@@ -1237,46 +2276,42 @@
         },
         
         copy: function(url, button) {
-			var showCopied = function(btn) {
-				try {
-					var originalText = btn.textContent;
-					btn.textContent = TEMF_CONF && TEMF_CONF.labels && TEMF_CONF.labels.copied ? TEMF_CONF.labels.copied : '已复制';
-					setTimeout(function() {
-						btn.textContent = originalText;
-					}, 1200);
-				} catch (e) {}
-			};
+            if (button && button.hasAttribute('data-temf-delete')) {
+                deleteOps.start([url]);
+                return;
+            }
 
-			if (navigator.clipboard && navigator.clipboard.writeText) {
-				navigator.clipboard.writeText(url).then(function() {
-					showCopied(button);
-				}).catch(function() {
-					// fallback below
-					try {
-						var temp = document.createElement('input');
-						temp.style.position = 'fixed';
-						temp.style.opacity = '0';
-						temp.value = url;
-						document.body.appendChild(temp);
-						temp.select();
-						document.execCommand('copy');
-						document.body.removeChild(temp);
-						showCopied(button);
-					} catch (err) {}
-				});
-			} else {
-				try {
-					var temp = document.createElement('input');
-					temp.style.position = 'fixed';
-					temp.style.opacity = '0';
-					temp.value = url;
-					document.body.appendChild(temp);
-					temp.select();
-					document.execCommand('copy');
-					document.body.removeChild(temp);
-					showCopied(button);
-				} catch (err) {}
-			}
+            var showCopied = function(btn) {
+                try {
+                    var originalText = btn.textContent;
+                    btn.textContent = TEMF_CONF && TEMF_CONF.labels && TEMF_CONF.labels.copied ? TEMF_CONF.labels.copied : '已复制';
+                    setTimeout(function() {
+                        btn.textContent = originalText;
+                    }, 1200);
+                } catch (e) {}
+            };
+
+            var fallbackCopy = function() {
+                try {
+                    var temp = document.createElement('input');
+                    temp.style.position = 'fixed';
+                    temp.style.opacity = '0';
+                    temp.value = url;
+                    document.body.appendChild(temp);
+                    temp.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(temp);
+                    showCopied(button);
+                } catch (err) {}
+            };
+
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(url).then(function() {
+                    showCopied(button);
+                }).catch(fallbackCopy);
+            } else {
+                fallbackCopy();
+            }
         },
         
         upload: function() {
@@ -1367,10 +2402,10 @@
             this.queue = files;
             this.currentIndex = 0;
             this.totalFiles = files.length;
-            
+
             progress.show();
             progress.update(0, this.totalFiles);
-            
+
             this.uploadNext();
         },
         
@@ -1562,11 +2597,14 @@
                 
                 if (success) {
                     progress.updateFileProgress(100);
-                    ui.prependFile({
+                    
+                    var newFile = {
                         name: result.name || file.name,
                         url: result.url,
                         thumbnail: result.thumbnail
-                    });
+                    };
+                    
+                    ui.prependFile(newFile);
                     
                     // 非批量模式，上传成功后隐藏进度条
                     if (!isBatch) {
@@ -1575,7 +2613,7 @@
                         }, 1000);
                     }
                 } else {
-                    var msg = (result && (result.msg || result.message)) || '上传失败';
+                    var msg = (result && (result.msg || result.message)) ? (result.msg || result.message) : '上传失败';
                     this.handleUploadError(msg, file, isBatch);
                 }
                 
@@ -1989,96 +3027,110 @@
     window.TEMF_PAGINATION = pagination;
     
     var progress = {
-        element: null,
-        
-        show: function() {
-            if (!this.element) {
-                this.create();
-            }
-            this.element.style.display = 'flex';
-            
-            // 重置错误状态
-            var label = this.element.querySelector('.temf-progress-label');
-            if (label) {
-                label.style.color = '';
-            }
-            
-            var progressBar = this.element.querySelector('.temf-progress-bar');
-            if (progressBar) {
-                progressBar.style.background = '';
-            }
+        overlay: null,
+        titleEl: null,
+        statusEl: null,
+        barEl: null,
+        currentFileIndex: 0,
+        totalFiles: 0,
+
+        ensureCreated: function() {
+            if (this.overlay) return;
+
+            var body = document.querySelector('#temf-modal .temf-body');
+            if (!body) return;
+
+            var overlay = document.createElement('div');
+            overlay.className = 'temf-progress-overlay';
+            overlay.innerHTML = '' +
+                '<div class="temf-progress-card">' +
+                    '<div class="temf-progress-title">上传文件</div>' +
+                    '<div class="temf-progress-bar-track"><div class="temf-progress-bar"></div></div>' +
+                    '<div class="temf-progress-status">上传中... 0% (0/0)</div>' +
+                '</div>';
+
+            body.appendChild(overlay);
+
+            this.overlay = overlay;
+            this.titleEl = overlay.querySelector('.temf-progress-title');
+            this.statusEl = overlay.querySelector('.temf-progress-status');
+            this.barEl = overlay.querySelector('.temf-progress-bar');
         },
-        
+
+        show: function(initialTitle) {
+            this.ensureCreated();
+            if (!this.overlay) return;
+
+            this.overlay.style.display = 'flex';
+            this.overlay.classList.remove('temf-progress-error');
+            var card = this.overlay.querySelector('.temf-progress-card');
+            if (card) card.classList.remove('temf-progress-error');
+
+            if (this.titleEl) {
+                this.titleEl.textContent = initialTitle || '上传文件';
+                this.titleEl.title = initialTitle || '';
+            }
+            if (this.barEl) {
+                this.barEl.style.width = '0%';
+            }
+            if (this.statusEl) {
+                this.statusEl.textContent = '上传中... 0%';
+                this.statusEl.classList.remove('error');
+            }
+            this.currentFileIndex = 0;
+            this.totalFiles = 0;
+        },
+
         hide: function() {
-            if (this.element) {
-                this.element.style.display = 'none';
+            if (this.overlay) {
+                this.overlay.style.display = 'none';
+                if (this.statusEl) {
+                    this.statusEl.classList.remove('error');
+                }
             }
         },
-        
+
         update: function(current, total, fileName) {
-            if (!this.element) return;
-            
-            var counter = this.element.querySelector('.temf-progress-counter');
-            if (counter) {
-                counter.textContent = current + '/' + total;
+            this.ensureCreated();
+            if (!this.overlay) return;
+
+            if (this.titleEl && fileName) {
+                this.titleEl.textContent = fileName;
+                this.titleEl.title = fileName;
             }
-            
-            var label = this.element.querySelector('.temf-progress-label');
-            if (label && fileName) {
-                label.textContent = fileName;
-                label.title = fileName;
-            }
-            
+            this.currentFileIndex = total > 0 ? Math.min(current + 1, total) : 0;
+            this.totalFiles = total;
             this.updateFileProgress(0);
         },
-        
+
         updateFileProgress: function(percent) {
-            if (!this.element) return;
-            
-            percent = Math.max(0, Math.min(100, percent));
-            var progressBar = this.element.querySelector('.temf-progress-bar');
-            var progressPercent = this.element.querySelector('.temf-progress-percent');
-            
-            if (progressBar) {
-                progressBar.style.width = percent + '%';
+            if (!this.overlay) return;
+
+            percent = Math.max(0, Math.min(100, Number.isFinite(percent) ? percent : 0));
+            if (this.barEl) {
+                this.barEl.style.width = percent + '%';
             }
-            
-            if (progressPercent) {
-                progressPercent.textContent = Math.round(percent) + '%';
+
+            if (this.statusEl) {
+                var displayTotal = this.totalFiles || 0;
+                var displayCurrent = displayTotal ? Math.max(1, this.currentFileIndex) : 0;
+                var suffix = displayTotal ? ' (' + displayCurrent + '/' + displayTotal + ')' : '';
+                this.statusEl.textContent = '上传中... ' + Math.round(percent) + '%' + suffix;
+                this.statusEl.classList.remove('error');
             }
         },
-        
+
         setError: function(msg) {
-            if (!this.element) return;
-            
-            var label = this.element.querySelector('.temf-progress-label');
-            if (label) {
-                label.textContent = '错误: ' + msg;
-                label.style.color = '#d63638';
+            if (!this.overlay) return;
+
+            var card = this.overlay.querySelector('.temf-progress-card');
+            if (card) {
+                card.classList.add('temf-progress-error');
             }
-            
-            var progressBar = this.element.querySelector('.temf-progress-bar');
-            if (progressBar) {
-                progressBar.style.background = '#d63638';
-            }
-        },
-        
-        create: function() {
-            this.element = document.createElement('div');
-            this.element.className = 'temf-progress';
-            this.element.innerHTML = 
-                '<div class="temf-progress-counter">0/0</div>' +
-                '<div class="temf-progress-container">' +
-                    '<div class="temf-progress-label">正在准备...</div>' +
-                    '<div class="temf-progress-bg">' +
-                        '<div class="temf-progress-bar"></div>' +
-                    '</div>' +
-                '</div>' +
-                '<div class="temf-progress-percent">0%</div>';
-            
-            var title = document.getElementById('temf-title');
-            if (title && title.parentNode) {
-                title.parentNode.insertBefore(this.element, title.nextSibling);
+
+            if (this.statusEl) {
+                this.statusEl.textContent = '上传失败: ' + msg;
+                this.statusEl.classList.add('error');
             }
         }
     };
@@ -2118,11 +3170,15 @@
         if (target && target.matches(".temf-pick")) {
                 var url = target.value;
                 if (target.checked) {
-                    selection.add(url);
+                    var meta = {
+                        id: target.getAttribute('data-meta-id') || null
+                    };
+                    selection.add(url, meta);
                 } else {
                     selection.remove(url);
                 }
-            }
+                return;
+        }
             
         if (target && target.matches("[data-temf-insert]")) {
                 var url = target.getAttribute("data-url");
@@ -2155,6 +3211,15 @@
                 e.preventDefault();
             }
     });
+
+    document.addEventListener('dblclick', function(e) {
+        var target = e.target;
+        if (!target || !target.classList) return;
+        if (target.classList.contains('temf-name')) {
+            e.preventDefault();
+            rename.start(target);
+        }
+    });
     
     /**
      * 处理云存储目录切换（合并COS/OSS逻辑）
@@ -2180,7 +3245,8 @@
                             opt.textContent = folder.name || folder.path;
                             sub.appendChild(opt);
                         });
-                ui.renderFiles(data.files || []);
+                        customSelects.sync('temf-subdir');
+                        ui.renderFiles(data.files || []);
                     });
         } else if (target.id === 'temf-subdir') {
                     var p1 = (byId('temf-dir').value || '');
@@ -2189,6 +3255,7 @@
                     
                     fetchFunction(path, function(data) {
                 ui.renderFiles(data.files || []);
+                customSelects.sync('temf-dir');
             });
         }
     }
@@ -2297,6 +3364,12 @@
         }
         
         img.classList.add('temf-loading');
+        if (img.dataset.loader) {
+            img.style.backgroundImage = 'url(' + img.dataset.loader + ')';
+            img.style.backgroundRepeat = 'no-repeat';
+            img.style.backgroundPosition = 'center';
+            img.style.backgroundSize = '28px 28px';
+        }
         
         var targetSrc = img.dataset.src;
         if (!targetSrc) {
@@ -2309,24 +3382,19 @@
         tempImg.onload = function() {
             // 图片预加载成功，但还要等实际元素加载完成
             img.src = targetSrc;
-            
+
             // 等待实际 img 元素加载完成
             img.onload = function() {
-                // 真正加载完成，开始过渡
                 img.classList.remove('temf-loading');
                 img.classList.add('temf-loaded');
-                
-                // 淡入动画
+                img.style.opacity = '';
+                img.style.transition = '';
+
                 requestAnimationFrame(function() {
-                    img.style.transition = 'opacity 0.3s ease-in-out';
-                    img.style.opacity = '0';
-                    
-                    requestAnimationFrame(function() {
-                        img.style.opacity = '1';
-                    });
+                    img.style.backgroundImage = 'none';
                 });
             };
-            
+
             // 如果图片已经缓存，立即触发
             if (img.complete) {
                 img.onload();
@@ -2336,6 +3404,7 @@
         tempImg.onerror = function() {
             // 加载失败，尝试使用原始URL
             img.classList.remove('temf-loading');
+            img.style.backgroundImage = 'none';
             if (img.dataset.original) {
                 img.src = img.dataset.original;
                 img.classList.add('temf-loaded');
@@ -2394,17 +3463,68 @@
             subtree: true
         });
     }
+        
+/**
+ * 监听窗口大小变化，重新计算分页大小
+ */
+var resizeTimer = null;
+function setupResizeListener() {
+    window.addEventListener('resize', function() {
+        // 防抖处理
+        if (resizeTimer) {
+            clearTimeout(resizeTimer);
+        }
+        
+        resizeTimer = setTimeout(function() {
+            // 只有在有文件显示时才重新计算
+            if (state.pagination.allFiles && state.pagination.allFiles.length > 0) {
+                var oldPageSize = state.pagination.pageSize;
+                var newPageSize = calculatePageSize();
+                
+                // 如果页面大小变化，重新渲染
+                if (oldPageSize !== newPageSize) {
+                    state.pagination.pageSize = newPageSize;
+                    ui.renderCurrentPage();
+                }
+            }
+        }, 300); // 300ms 防抖
+    });
+}
+        
+// 监听DOM变化，自动初始化新添加的图片
+var lazyImageMutationObserver = null;
+function setupLazyImageObserver() {
+    if (!window.MutationObserver) return;
     
-    if (document.readyState !== "loading") {
+    var targetNode = document.querySelector('#temf-modal .temf-body');
+    if (!targetNode) return;
+    
+    lazyImageMutationObserver = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+            if (mutation.addedNodes.length > 0) {
+                initLazyLoading();
+            }
+        });
+    });
+    
+    lazyImageMutationObserver.observe(targetNode, {
+        childList: true,
+        subtree: true
+    });
+}
+        
+if (document.readyState !== "loading") {
+    mount();
+    customSelects.initAll();
+    setupLazyImageObserver();
+    setupResizeListener();
+} else {
+    document.addEventListener("DOMContentLoaded", function() {
         mount();
+        customSelects.initAll();
         setupLazyImageObserver();
         setupResizeListener();
-    } else {
-        document.addEventListener("DOMContentLoaded", function() {
-            mount();
-            setupLazyImageObserver();
-            setupResizeListener();
-        });
-    }
-    
-})();
+    });
+}
+
+})(window, document);

@@ -22,16 +22,27 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
     private static $actionMap = [
         'temf-cos-list' => ['handler' => 'handleCloudStorageList', 'type' => 'cos'],
         'temf-cos-upload' => ['handler' => 'handleCloudStorageUpload', 'type' => 'cos'],
+        'temf-cos-delete' => ['handler' => 'handleCloudDeleteAction', 'type' => 'cos'],
+        'temf-cos-rename' => ['handler' => 'handleCloudRenameAction', 'type' => 'cos'],
         'temf-oss-list' => ['handler' => 'handleCloudStorageList', 'type' => 'oss'],
         'temf-oss-upload' => ['handler' => 'handleCloudStorageUpload', 'type' => 'oss'],
+        'temf-oss-delete' => ['handler' => 'handleCloudDeleteAction', 'type' => 'oss'],
+        'temf-oss-rename' => ['handler' => 'handleCloudRenameAction', 'type' => 'oss'],
         'temf-upyun-list' => ['handler' => 'handleCloudStorageList', 'type' => 'upyun'],
         'temf-upyun-upload' => ['handler' => 'handleCloudStorageUpload', 'type' => 'upyun'],
+        'temf-upyun-delete' => ['handler' => 'handleCloudDeleteAction', 'type' => 'upyun'],
+        'temf-upyun-rename' => ['handler' => 'handleCloudRenameAction', 'type' => 'upyun'],
         'temf-lsky-list' => ['handler' => 'handleLskyListAction', 'type' => 'lsky'],
         'temf-lsky-upload' => ['handler' => 'handleCloudStorageUpload', 'type' => 'lsky'],
+        'temf-lsky-delete' => ['handler' => 'handleCloudDeleteAction', 'type' => 'lsky'],
         'temf-local-upload' => ['handler' => 'handleLocalUploadAction', 'type' => 'local'],
+        'temf-local-rename' => ['handler' => 'handleLocalRenameAction', 'type' => null],
+        'temf-local-delete' => ['handler' => 'handleLocalDeleteAction', 'type' => null],
         'temf-storage-types' => ['handler' => 'handleGetStorageTypesAction', 'type' => null],
         'temf-multi-list' => ['handler' => 'handleMultiListAction', 'type' => 'multi'],
         'temf-multi-upload' => ['handler' => 'handleMultiUploadAction', 'type' => 'multi'],
+        'temf-multi-rename' => ['handler' => 'handleMultiRenameAction', 'type' => null],
+        'temf-multi-delete' => ['handler' => 'handleMultiDeleteAction', 'type' => null],
         'temf-test-upyun' => ['handler' => 'handleTestUpyunConnection', 'type' => null],
     ];
     
@@ -87,6 +98,148 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
             $this->sendJsonResponse($result);
         } catch (\Exception $e) {
             $this->sendJsonResponse(['folders' => [], 'files' => []]);
+        }
+    }
+
+    private function handleCloudRenameAction($storageType)
+    {
+        try {
+            $service = $this->getService($storageType);
+            if (!$service) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => 'Service not found']);
+                return;
+            }
+
+            if (!method_exists($service, 'renameFile')) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => '当前存储暂不支持重命名']);
+                return;
+            }
+
+            $fileUrl = $this->request->get('file_url', '');
+            $newName = $this->request->get('new_name', '');
+            $fileId = $this->request->get('file_id', '');
+
+            if ($fileUrl === '' || $newName === '') {
+                $this->sendJsonResponse(['ok' => false, 'msg' => '参数不完整']);
+                return;
+            }
+
+            $result = $service->renameFile($fileUrl, $newName, $fileId);
+            $this->sendJsonResponse($result);
+        } catch (\Exception $e) {
+            $this->sendJsonResponse(['ok' => false, 'msg' => '重命名失败: ' . $e->getMessage()]);
+        }
+    }
+
+    private function handleCloudDeleteAction($storageType)
+    {
+        try {
+            $service = $this->getService($storageType);
+            if (!$service) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => 'Service not found']);
+                return;
+            }
+
+            if (!method_exists($service, 'deleteFile')) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => '当前存储暂不支持删除']);
+                return;
+            }
+
+            $fileUrls = $this->request->getArray('file_urls');
+            if (!is_array($fileUrls) || empty($fileUrls)) {
+                $single = $this->request->get('file_url', '');
+                $fileUrls = $single !== '' ? [$single] : [];
+            }
+
+            if (empty($fileUrls)) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => '参数不完整']);
+                return;
+            }
+
+            $fileIds = $this->request->getArray('file_ids');
+            $results = [];
+            foreach ($fileUrls as $index => $url) {
+                $fileId = null;
+                if (is_array($fileIds)) {
+                    if (array_key_exists($index, $fileIds)) {
+                        $fileId = $fileIds[$index];
+                    } elseif (isset($fileIds[$url])) {
+                        $fileId = $fileIds[$url];
+                    }
+                }
+
+                $results[] = $service->deleteFile($url, $fileId);
+            }
+
+            foreach ($results as $res) {
+                if (!$res['ok']) {
+                    $this->sendJsonResponse(['ok' => false, 'results' => $results]);
+                    return;
+                }
+            }
+
+            $this->sendJsonResponse(['ok' => true]);
+        } catch (\Exception $e) {
+            $this->sendJsonResponse(['ok' => false, 'msg' => '删除失败: ' . $e->getMessage()]);
+        }
+    }
+
+    private function handleMultiDeleteAction()
+    {
+        try {
+            $storageType = $this->request->get('storage_type', '');
+            $fileUrls = $this->request->getArray('file_urls');
+            if (!is_array($fileUrls) || empty($fileUrls)) {
+                $single = $this->request->get('file_url', '');
+                $fileUrls = $single !== '' ? [$single] : [];
+            }
+
+            if ($storageType === '' || empty($fileUrls)) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => '参数不完整']);
+                return;
+            }
+
+            $service = $this->getService($storageType);
+            if (!$service) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => 'Service not found']);
+                return;
+            }
+
+            if (!method_exists($service, 'deleteFile')) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => '当前存储暂不支持删除']);
+                return;
+            }
+
+            $fileIds = $this->request->getArray('file_ids');
+            $results = [];
+            foreach ($fileUrls as $index => $url) {
+                $fileId = null;
+                if (is_array($fileIds)) {
+                    if (array_key_exists($index, $fileIds)) {
+                        $fileId = $fileIds[$index];
+                    } elseif (isset($fileIds[$url])) {
+                        $fileId = $fileIds[$url];
+                    }
+                }
+
+                $results[] = $service->deleteFile($url, $fileId);
+            }
+
+            $hasError = false;
+            foreach ($results as $res) {
+                if (!$res['ok']) {
+                    $hasError = true;
+                    break;
+                }
+            }
+
+            if ($hasError) {
+                $this->sendJsonResponse(['ok' => false, 'results' => $results]);
+            } else {
+                $this->sendJsonResponse(['ok' => true]);
+            }
+        } catch (\Exception $e) {
+            $this->sendJsonResponse(['ok' => false, 'msg' => '删除失败: ' . $e->getMessage()]);
         }
     }
     
@@ -162,6 +315,104 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
         return $this->serviceCache[$storageType];
     }
     
+    private function handleLocalRenameAction()
+    {
+        try {
+            $fileUrl = $this->request->get('file_url', '');
+            $newName = $this->request->get('new_name', '');
+
+            if ($fileUrl === '' || $newName === '') {
+                $this->sendJsonResponse(['ok' => false, 'msg' => '参数不完整']);
+                return;
+            }
+
+            $service = $this->getService('local');
+            if (!$service) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => 'Service not found']);
+                return;
+            }
+
+            $result = $service->renameFile($fileUrl, $newName);
+            $this->sendJsonResponse($result);
+        } catch (\Exception $e) {
+            $this->sendJsonResponse(['ok' => false, 'msg' => '重命名失败: ' . $e->getMessage()]);
+        }
+    }
+
+    private function handleLocalDeleteAction()
+    {
+        try {
+            $fileUrls = $this->request->getArray('file_urls');
+            if (!is_array($fileUrls) || empty($fileUrls)) {
+                $single = $this->request->get('file_url', '');
+                $fileUrls = $single !== '' ? [$single] : [];
+            }
+
+            if (empty($fileUrls)) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => '参数不完整']);
+                return;
+            }
+
+            $service = $this->getService('local');
+            if (!$service) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => 'Service not found']);
+                return;
+            }
+
+            $results = [];
+            foreach ($fileUrls as $url) {
+                $results[] = $service->deleteFile($url);
+            }
+
+            $hasError = false;
+            foreach ($results as $res) {
+                if (!$res['ok']) {
+                    $hasError = true;
+                    break;
+                }
+            }
+
+            if ($hasError) {
+                $this->sendJsonResponse(['ok' => false, 'results' => $results]);
+            } else {
+                $this->sendJsonResponse(['ok' => true]);
+            }
+        } catch (\Exception $e) {
+            $this->sendJsonResponse(['ok' => false, 'msg' => '删除失败: ' . $e->getMessage()]);
+        }
+    }
+
+    private function handleMultiRenameAction()
+    {
+        try {
+            $storageType = $this->request->get('storage_type', '');
+            $fileUrl = $this->request->get('file_url', '');
+            $newName = $this->request->get('new_name', '');
+            $fileId = $this->request->get('file_id', '');
+
+            if ($storageType === '' || $fileUrl === '' || $newName === '') {
+                $this->sendJsonResponse(['ok' => false, 'msg' => '参数不完整']);
+                return;
+            }
+
+            $service = $this->getService($storageType);
+            if (!$service) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => 'Service not found']);
+                return;
+            }
+
+            if (!method_exists($service, 'renameFile')) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => '当前存储暂不支持重命名']);
+                return;
+            }
+
+            $result = $service->renameFile($fileUrl, $newName, $fileId);
+            $this->sendJsonResponse($result);
+        } catch (\Exception $e) {
+            $this->sendJsonResponse(['ok' => false, 'msg' => '重命名失败: ' . $e->getMessage()]);
+        }
+    }
+
     private function handleLocalUploadAction()
     {
         try {

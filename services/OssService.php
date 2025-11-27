@@ -58,6 +58,126 @@ class OssService extends BaseService
         }
     }
 
+    public function renameFile($fileUrl, $newBaseName, $fileId = null)
+    {
+        if (!$this->isConfigured()) {
+            return ['ok' => false, 'msg' => 'Missing OSS config'];
+        }
+
+        $objectKey = $fileId !== null && $fileId !== '' ? trim($fileId) : $this->extractObjectKey($fileUrl);
+        if ($objectKey === '') {
+            return ['ok' => false, 'msg' => '无法解析对象路径'];
+        }
+
+        $newBaseName = trim((string)$newBaseName);
+        if ($newBaseName === '') {
+            return ['ok' => false, 'msg' => '文件名不能为空'];
+        }
+
+        $pathInfo = pathinfo($objectKey);
+        $extension = isset($pathInfo['extension']) ? $pathInfo['extension'] : '';
+        $directory = isset($pathInfo['dirname']) ? $pathInfo['dirname'] : '';
+        if ($directory === '.' || $directory === DIRECTORY_SEPARATOR) {
+            $directory = '';
+        }
+        $normalizedDirectory = $directory !== '' ? trim(str_replace('\\', '/', $directory), '/') : '';
+
+        $sanitizedBase = $this->sanitizeBaseName($newBaseName);
+        if ($sanitizedBase === '') {
+            return ['ok' => false, 'msg' => '文件名无效'];
+        }
+
+        $newFilename = $extension !== '' ? $sanitizedBase . '.' . $extension : $sanitizedBase;
+        $newKey = ($normalizedDirectory !== '' ? $normalizedDirectory . '/' : '') . $newFilename;
+
+        if ($newKey === trim($objectKey, '/')) {
+            $publicUrl = $this->getPublicUrl($objectKey);
+            $result = [
+                'ok' => true,
+                'url' => $publicUrl,
+                'name' => $newFilename,
+                'id' => trim($objectKey, '/'),
+                'directory' => $normalizedDirectory
+            ];
+            if ($this->isImageFile($newFilename)) {
+                $result['thumbnail'] = $this->getThumbnailUrl($publicUrl);
+            }
+            return $result;
+        }
+
+        $host = $this->getHost();
+        $scheme = $this->getScheme();
+        $encodedNewKey = $this->encodeKey($newKey);
+        $encodedOldKey = $this->encodeKey($objectKey);
+        $date = gmdate('D, d M Y H:i:s \G\M\T');
+        $sourceHeader = '/' . $this->ossConfig['bucket'] . '/' . $encodedOldKey;
+
+        try {
+            $authorization = $this->generateAuthorization('PUT', '/' . $encodedNewKey, $date, '', ['x-oss-copy-source' => $sourceHeader]);
+            $requestHeaders = [
+                'Date: ' . $date,
+                'Authorization: ' . $authorization,
+                'User-Agent: TEMediaFolder/1.0',
+                'x-oss-copy-source: ' . $sourceHeader
+            ];
+
+            $url = $scheme . '://' . $host . '/' . $encodedNewKey;
+            $this->makeRequest($url, 'PUT', $requestHeaders);
+
+            if ($encodedOldKey !== $encodedNewKey) {
+                $this->deleteFile($fileUrl, $objectKey);
+            }
+
+            $newUrl = $this->getPublicUrl($newKey);
+            $result = [
+                'ok' => true,
+                'url' => $newUrl,
+                'name' => $newFilename,
+                'id' => $newKey,
+                'directory' => $normalizedDirectory
+            ];
+            if ($this->isImageFile($newFilename)) {
+                $result['thumbnail'] = $this->getThumbnailUrl($newUrl);
+            }
+            return $result;
+        } catch (\Exception $e) {
+            return ['ok' => false, 'msg' => '重命名失败: ' . $e->getMessage()];
+        }
+    }
+
+    public function deleteFile($fileUrl, $fileId = null)
+    {
+        if (!$this->isConfigured()) {
+            return ['ok' => false, 'msg' => 'Missing OSS config'];
+        }
+
+        $objectKey = $fileId !== null && $fileId !== '' ? trim($fileId) : $this->extractObjectKey($fileUrl);
+        if ($objectKey === '') {
+            return ['ok' => false, 'msg' => '无法解析对象路径'];
+        }
+
+        try {
+            $host = $this->getHost();
+            $scheme = $this->getScheme();
+            $date = gmdate('D, d M Y H:i:s \G\M\T');
+            $authorization = $this->generateAuthorization('DELETE', '/' . $objectKey, $date);
+
+            $encodedPath = '/' . implode('/', array_map('rawurlencode', explode('/', $objectKey)));
+            $url = $scheme . '://' . $host . $encodedPath;
+
+            $this->makeRequest($url, 'DELETE', [
+                'Date: ' . $date,
+                'Authorization: ' . $authorization,
+                'User-Agent: TEMediaFolder/1.0',
+                'Host: ' . $host
+            ]);
+
+            return ['ok' => true];
+        } catch (\Exception $e) {
+            return ['ok' => false, 'msg' => '删除失败: ' . $e->getMessage()];
+        }
+    }
+
     public function uploadFile($filePath, $fileName, $targetPath = '')
     {
         if (!$this->isConfigured()) {
@@ -164,10 +284,21 @@ class OssService extends BaseService
             . '/format,webp';
     }
 
-    private function generateAuthorization($method, $resource, $date, $contentType = '')
+    private function generateAuthorization($method, $resource, $date, $contentType = '', $headers = [])
     {
         $canonicalizedResource = '/' . $this->ossConfig['bucket'] . $resource;
-        $stringToSign = $method . "\n\n" . $contentType . "\n" . $date . "\n" . $canonicalizedResource;
+        $canonicalizedHeaders = '';
+        if (!empty($headers)) {
+            $lowerHeaders = [];
+            foreach ($headers as $key => $value) {
+                $lowerHeaders[strtolower($key)] = trim($value);
+            }
+            ksort($lowerHeaders);
+            foreach ($lowerHeaders as $k => $v) {
+                $canonicalizedHeaders .= $k . ':' . $v . "\n";
+            }
+        }
+        $stringToSign = $method . "\n\n" . $contentType . "\n" . $date . "\n" . $canonicalizedHeaders . $canonicalizedResource;
         $signature = base64_encode(hash_hmac('sha1', $stringToSign, $this->ossConfig['accessKeySecret'], true));
         
         return 'OSS ' . $this->ossConfig['accessKeyId'] . ':' . $signature;
@@ -195,6 +326,26 @@ class OssService extends BaseService
         }
         
         return $response;
+    }
+
+    private function sanitizeBaseName($baseName)
+    {
+        $sanitized = preg_replace('/[^a-zA-Z0-9\-_]+/', '_', $baseName);
+        $sanitized = trim($sanitized, '._-');
+        if ($sanitized === '') {
+            $sanitized = 'file_' . date('YmdHis');
+        }
+        return substr($sanitized, 0, 80);
+    }
+
+    private function encodeKey($key)
+    {
+        $key = ltrim(str_replace(['\\'], '/', $key), '/');
+        if ($key === '') {
+            return '';
+        }
+        $segments = array_map('rawurlencode', explode('/', $key));
+        return implode('/', $segments);
     }
 
     private function parseListResponse($response, $fullPrefix, $path)
@@ -246,7 +397,8 @@ class OssService extends BaseService
                 $fileData = [
                     'name' => $name,
                     'url' => $publicUrl,
-                    'mtime' => $lastModified
+                    'mtime' => $lastModified,
+                    'id' => $key
                 ];
                 
                 // 为图片文件添加缩略图URL
@@ -260,5 +412,20 @@ class OssService extends BaseService
         }
 
         return ['folders' => $folders, 'files' => $files];
+    }
+
+    private function extractObjectKey($fileUrl)
+    {
+        if (empty($fileUrl)) {
+            return '';
+        }
+
+        $path = parse_url($fileUrl, PHP_URL_PATH);
+        if (!$path) {
+            return '';
+        }
+
+        $key = ltrim($path, '/');
+        return rawurldecode($key);
     }
 }

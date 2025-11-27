@@ -56,6 +56,88 @@ class UpyunService extends BaseService
         }
     }
 
+    public function renameFile($fileUrl, $newBaseName, $fileId = null)
+    {
+        if (!$this->isConfigured()) {
+            return ['ok' => false, 'msg' => 'Missing Upyun config'];
+        }
+
+        $objectPath = $fileId !== null && $fileId !== '' ? trim($fileId) : $this->extractObjectPath($fileUrl);
+        if ($objectPath === '') {
+            return ['ok' => false, 'msg' => '无法解析对象路径'];
+        }
+
+        $newBaseName = trim((string)$newBaseName);
+        if ($newBaseName === '') {
+            return ['ok' => false, 'msg' => '文件名不能为空'];
+        }
+
+        $pathInfo = pathinfo($objectPath);
+        $extension = isset($pathInfo['extension']) ? $pathInfo['extension'] : '';
+        $directory = isset($pathInfo['dirname']) ? $pathInfo['dirname'] : '';
+        if ($directory === '.' || $directory === DIRECTORY_SEPARATOR) {
+            $directory = '';
+        }
+        $normalizedDirectory = $directory !== '' ? trim(str_replace('\\', '/', $directory), '/') : '';
+
+        $sanitizedBase = $this->sanitizeBaseName($newBaseName);
+        if ($sanitizedBase === '') {
+            return ['ok' => false, 'msg' => '文件名无效'];
+        }
+
+        $newFilename = $extension !== '' ? $sanitizedBase . '.' . $extension : $sanitizedBase;
+        $newPath = ($normalizedDirectory !== '' ? $normalizedDirectory . '/' : '') . $newFilename;
+
+        if ($newPath === trim($objectPath, '/')) {
+            $newUrl = $this->getPublicUrl($newPath);
+            $result = [
+                'ok' => true,
+                'url' => $newUrl,
+                'name' => $newFilename,
+                'id' => trim($newPath, '/'),
+                'directory' => $normalizedDirectory
+            ];
+            if ($this->isImageFile($newFilename)) {
+                $result['thumbnail'] = $this->getThumbnailUrl($newUrl);
+            }
+            return $result;
+        }
+
+        $bucket = $this->upyunConfig['bucket'];
+        $sourceUri = '/' . $bucket . '/' . ltrim($this->normalizePath($objectPath), '/');
+        $destinationUri = '/' . $bucket . '/' . ltrim($this->normalizePath($newPath), '/');
+
+        try {
+            $authData = $this->generateAuthorization('POST', $sourceUri);
+            $url = 'https://v0.api.upyun.com' . $sourceUri;
+            $headers = [
+                'Authorization: ' . $authData['authorization'],
+                'Date: ' . $authData['date'],
+                'User-Agent: TEMediaFolder/1.0',
+                'Content-Length: 0',
+                'X-Upyun-Move-To: ' . $destinationUri,
+                'X-Upyun-Overwrite: true'
+            ];
+
+            $this->makeRequest($url, 'POST', $headers, '');
+
+            $newUrl = $this->getPublicUrl($newPath);
+            $result = [
+                'ok' => true,
+                'url' => $newUrl,
+                'name' => $newFilename,
+                'id' => trim($newPath, '/'),
+                'directory' => $normalizedDirectory
+            ];
+            if ($this->isImageFile($newFilename)) {
+                $result['thumbnail'] = $this->getThumbnailUrl($newUrl);
+            }
+            return $result;
+        } catch (\Exception $e) {
+            return ['ok' => false, 'msg' => '重命名失败: ' . $e->getMessage()];
+        }
+    }
+
     public function uploadFile($filePath, $fileName, $targetPath = '')
     {
         if (!$this->isConfigured()) {
@@ -128,6 +210,43 @@ class UpyunService extends BaseService
             return $this->buildUploadResult(true, $publicUrl, $safeFileName, $options);
         } catch (\Exception $e) {
             return $this->buildUploadResult(false, '', '', ['msg' => $e->getMessage()]);
+        }
+    }
+
+    public function deleteFile($fileUrl, $fileId = null)
+    {
+        if (!$this->isConfigured()) {
+            return ['ok' => false, 'msg' => 'Missing Upyun config'];
+        }
+
+        $objectPath = $fileId !== null && $fileId !== '' ? trim($fileId) : $this->extractObjectPath($fileUrl);
+        if ($objectPath === '') {
+            return ['ok' => false, 'msg' => '无法解析对象路径'];
+        }
+
+        $bucket = $this->upyunConfig['bucket'];
+        $uri = '/' . $bucket . '/' . ltrim($objectPath, '/');
+        $method = 'DELETE';
+
+        try {
+            $authData = $this->generateAuthorization($method, $uri);
+            $url = 'https://v0.api.upyun.com' . $uri;
+
+            $headers = [
+                'Authorization: ' . $authData['authorization'],
+                'Date: ' . $authData['date'],
+                'User-Agent: TEMediaFolder/1.0'
+            ];
+
+            if (!empty($authData['content_md5'])) {
+                $headers[] = 'Content-MD5: ' . $authData['content_md5'];
+            }
+
+            $this->makeRequest($url, $method, $headers);
+
+            return ['ok' => true];
+        } catch (\Exception $e) {
+            return ['ok' => false, 'msg' => '删除失败: ' . $e->getMessage()];
         }
     }
 
@@ -204,7 +323,8 @@ class UpyunService extends BaseService
                     'url' => $publicUrl,
                     'thumbnail' => $this->getThumbnailUrl($publicUrl),
                     'size' => $size,
-                    'mtime' => $mtime
+                    'mtime' => $mtime,
+                    'id' => trim($path . '/' . $name, '/')
                 ];
             }
         }
@@ -217,6 +337,20 @@ class UpyunService extends BaseService
         $domain = rtrim($this->upyunConfig['domain'], '/');
         $cleanPath = '/' . ltrim($path, '/');
         return $domain . $cleanPath;
+    }
+
+    private function extractObjectPath($fileUrl)
+    {
+        if (empty($fileUrl)) {
+            return '';
+        }
+
+        $path = parse_url($fileUrl, PHP_URL_PATH);
+        if (!$path) {
+            return '';
+        }
+
+        return trim($path, '/');
     }
 
     private function makeRequest($url, $method = 'GET', $headers = [], $body = null)
@@ -262,6 +396,22 @@ class UpyunService extends BaseService
         // 移除或替换不安全的字符
         $fileName = preg_replace('/[^\w\-\.]+/u', '_', $fileName);
         return $fileName;
+    }
+
+    private function sanitizeBaseName($baseName)
+    {
+        $sanitized = preg_replace('/[^a-zA-Z0-9\-_]+/', '_', $baseName);
+        $sanitized = trim($sanitized, '._-');
+        if ($sanitized === '') {
+            $sanitized = 'file_' . date('YmdHis');
+        }
+        return substr($sanitized, 0, 80);
+    }
+
+    private function normalizePath($path)
+    {
+        $normalized = str_replace('\\', '/', $path);
+        return trim($normalized, '/');
     }
     
     /**

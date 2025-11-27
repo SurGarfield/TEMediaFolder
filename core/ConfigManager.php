@@ -220,12 +220,38 @@ class ConfigManager
 
     public function getUploadDir()
     {
-        return __TYPECHO_ROOT_DIR__ . DIRECTORY_SEPARATOR . 'usr' . DIRECTORY_SEPARATOR . 'uploads';
+        $rootDir = defined('TYPECHO_UPLOAD_ROOT_DIR')
+            ? rtrim(TYPECHO_UPLOAD_ROOT_DIR, DIRECTORY_SEPARATOR)
+            : __TYPECHO_ROOT_DIR__;
+
+        $relativeDir = defined('__TYPECHO_UPLOAD_DIR__')
+            ? trim(__TYPECHO_UPLOAD_DIR__, '\\/')
+            : 'usr/uploads';
+
+        if ($relativeDir === '') {
+            return $rootDir;
+        }
+
+        $relativeDir = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $relativeDir);
+
+        return $rootDir . DIRECTORY_SEPARATOR . $relativeDir;
     }
 
     public function getUploadUrl()
     {
-        return \Typecho\Common::url('usr/uploads/', $this->options->siteUrl);
+        if (defined('__TYPECHO_UPLOAD_URL__')) {
+            return rtrim(__TYPECHO_UPLOAD_URL__, '/') . '/';
+        }
+
+        $relativeDir = defined('__TYPECHO_UPLOAD_DIR__')
+            ? trim(__TYPECHO_UPLOAD_DIR__, '/\\')
+            : 'usr/uploads';
+
+        if ($relativeDir !== '') {
+            $relativeDir .= '/';
+        }
+
+        return \Typecho\Common::url($relativeDir, $this->options->siteUrl);
     }
 
     public function isMarkdownEnabled()

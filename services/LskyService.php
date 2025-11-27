@@ -21,6 +21,53 @@ class LskyService
         return !empty($this->lskyConfig['url']) && !empty($this->lskyConfig['token']);
     }
 
+    public function deleteFile($fileUrl, $fileId = null)
+    {
+        if (!$this->isConfigured()) {
+            return ['ok' => false, 'msg' => 'Lsky not configured'];
+        }
+
+        $fileId = $fileId !== null ? trim((string)$fileId) : '';
+        if ($fileId === '') {
+            return ['ok' => false, 'msg' => '缺少图片ID'];
+        }
+
+        if (!ctype_digit($fileId)) {
+            return ['ok' => false, 'msg' => '无效的图片ID'];
+        }
+
+        $intId = (int)$fileId;
+        if ($intId <= 0) {
+            return ['ok' => false, 'msg' => '无效的图片ID'];
+        }
+
+        try {
+            $endpoint = rtrim($this->lskyConfig['url'], '/') . '/api/v2/user/photos';
+            $payload = json_encode([$intId]);
+            if ($payload === false) {
+                throw new \Exception('Failed to encode payload');
+            }
+
+            $response = $this->makeRequest($endpoint, 'DELETE', ['Content-Type: application/json'], $payload);
+
+            if ($response) {
+                $data = json_decode($response, true);
+                if (is_array($data)) {
+                    if (isset($data['status']) && ($data['status'] === true || $data['status'] === 'success')) {
+                        return ['ok' => true];
+                    }
+                    if (isset($data['message'])) {
+                        return ['ok' => false, 'msg' => $data['message']];
+                    }
+                }
+            }
+
+            return ['ok' => true];
+        } catch (\Exception $e) {
+            return ['ok' => false, 'msg' => '删除失败: ' . $e->getMessage()];
+        }
+    }
+
     /**
      * 根据相册ID过滤图片
      */
@@ -843,37 +890,31 @@ class LskyService
     private function makeRequest($url, $method = 'GET', $headers = [], $data = null)
     {
         $token = $this->lskyConfig['token'];
-        
-        // 兰空图床支持多种认证方式，尝试自动检测
+
         if (empty($token)) {
             throw new \Exception('Lsky API Token is required');
         }
-        
-        // 根据token格式确定认证方式
+
         $authHeader = $this->buildAuthHeader($token);
-        
+
         $defaultHeaders = [
             $authHeader,
             'Accept: application/json',
             'User-Agent: TEMediaFolder-Plugin/1.0'
         ];
-        
-        // 对于文件上传，不设置Content-Type让curl自动处理
-        $isFileUpload = ($method === 'POST' && $data && $this->containsCURLFile($data));
+
+        $isFileUpload = ($method === 'POST' && is_array($data) && $this->containsCURLFile($data));
+
         if ($isFileUpload) {
-            // 文件上传时，只保留必要的头部，让CURL自动处理Content-Type
-            $headers = [
+            $headers = array_merge([
                 $authHeader,
                 'Accept: application/json',
                 'Expect:'
-            ];
-            
-            // BatIMG可能不需要CSRF token，先尝试不带token的上传
-            // 如果失败再尝试获取CSRF token
+            ], $headers);
         } else {
             $headers = array_merge($defaultHeaders, $headers);
         }
-        
+
         $ch = curl_init();
         curl_setopt_array($ch, [
             CURLOPT_URL => $url,
@@ -884,66 +925,48 @@ class LskyService
             CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_SSL_VERIFYHOST => false,
             CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 10, // 参考代码中的设置
-            CURLOPT_ENCODING => '', // 参考代码中的设置
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1, // 参考代码中的设置
-            CURLOPT_VERBOSE => false // 可以在调试时开启
+            CURLOPT_MAXREDIRS => 10,
+            CURLOPT_ENCODING => '',
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_VERBOSE => false
         ]);
-        
-        if ($method === 'POST' && $data) {
-            if ($isFileUpload) {
-                // 预处理POST数据，确保布尔值正确传递
+
+        if ($method !== 'GET' && $data !== null) {
+            if ($method === 'POST' && $isFileUpload) {
                 $processedData = [];
                 foreach ($data as $key => $value) {
                     if ($value instanceof \CURLFile) {
                         $processedData[$key] = $value;
                     } elseif (is_bool($value)) {
-                        // 将布尔值转换为字符串形式，某些API可能需要这样
                         $processedData[$key] = $value ? '1' : '0';
                     } else {
                         $processedData[$key] = $value;
                     }
                 }
-                
-                // 对于文件上传，确保使用正确的选项
+
                 curl_setopt($ch, CURLOPT_POST, true);
                 curl_setopt($ch, CURLOPT_POSTFIELDS, $processedData);
-                
-                // 调试：记录POST数据的键
-                if (is_array($data)) {
-                    $keys = array_keys($data);
-                    // error_log('Lsky: POST data keys: ' . implode(', ', $keys));
-                    
-                    // 检查文件参数
-                    foreach ($data as $key => $value) {
-                        if ($value instanceof \CURLFile) {
-                            // error_log("Lsky: CURLFile param '$key' - file: " . $value->getFilename() . ", mime: " . $value->getMimeType());
-                        }
-                    }
-                }
             } else {
                 curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+                if ($method === 'POST') {
+                    curl_setopt($ch, CURLOPT_POST, true);
+                }
             }
         }
-        
+
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-        $curlInfo = curl_getinfo($ch);
         curl_close($ch);
-        
-        // 调试信息记录
-        // API请求完成
-        
+
         if ($response === false || !empty($error)) {
             throw new \Exception('CURL Error: ' . ($error ?: 'Unknown network error'));
         }
-        
-        // 处理HTTP状态码
+
         if ($httpCode >= 400) {
             $errorData = json_decode($response, true);
             $errorMsg = 'HTTP ' . $httpCode;
-            
+
             if ($errorData) {
                 if (isset($errorData['message'])) {
                     $errorMsg .= ': ' . $errorData['message'];
@@ -954,24 +977,21 @@ class LskyService
                     $errorMsg .= ': ' . $errors;
                 }
             }
-            
-            // 特殊处理授权错误
+
             if ($httpCode === 401 || $httpCode === 403) {
                 $errorMsg .= ' (请检查API Token是否正确或已过期)';
             }
-            
+
             throw new \Exception($errorMsg);
         }
-        
-        // 某些情况下服务端返回空响应体但状态为200，按错误处理
-        if ($response === '' || $response === null) {
+
+        if (($response === '' || $response === null) && !in_array($httpCode, [204, 205], true)) {
             throw new \Exception('Empty response from server');
         }
-        
-        return $response;
+
+        return $response ?? '';
     }
 
-    // —— 兼容 7bu / V1 接口策略获取 ——
     private function resolveStrategyIdV1()
     {
         // 优先使用配置的 strategyId

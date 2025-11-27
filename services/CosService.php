@@ -54,6 +54,128 @@ class CosService extends BaseService
         }
     }
 
+    public function renameFile($fileUrl, $newBaseName, $fileId = null)
+    {
+        if (!$this->isConfigured()) {
+            return ['ok' => false, 'msg' => 'Missing COS config'];
+        }
+
+        $objectKey = $fileId !== null && $fileId !== '' ? trim($fileId) : $this->extractObjectKey($fileUrl);
+        if ($objectKey === '') {
+            return ['ok' => false, 'msg' => '无法解析对象路径'];
+        }
+
+        $newBaseName = trim((string)$newBaseName);
+        if ($newBaseName === '') {
+            return ['ok' => false, 'msg' => '文件名不能为空'];
+        }
+
+        $pathInfo = pathinfo($objectKey);
+        $extension = isset($pathInfo['extension']) ? $pathInfo['extension'] : '';
+        $directory = isset($pathInfo['dirname']) ? $pathInfo['dirname'] : '';
+        if ($directory === '.' || $directory === DIRECTORY_SEPARATOR) {
+            $directory = '';
+        }
+        $normalizedDirectory = $directory !== '' ? trim(str_replace('\\', '/', $directory), '/') : '';
+
+        $sanitizedBase = $this->sanitizeBaseName($newBaseName);
+        if ($sanitizedBase === '') {
+            return ['ok' => false, 'msg' => '文件名无效'];
+        }
+
+        $newFilename = $extension !== '' ? $sanitizedBase . '.' . $extension : $sanitizedBase;
+        $newKey = ($normalizedDirectory !== '' ? $normalizedDirectory . '/' : '') . $newFilename;
+
+        if ($newKey === trim($objectKey, '/')) {
+            $publicUrl = $this->getPublicUrl($objectKey);
+            $result = [
+                'ok' => true,
+                'url' => $publicUrl,
+                'name' => $newFilename,
+                'id' => trim($objectKey, '/'),
+                'directory' => $normalizedDirectory
+            ];
+            if ($this->isImageFile($newFilename)) {
+                $result['thumbnail'] = $this->getThumbnailUrl($publicUrl);
+            }
+            return $result;
+        }
+
+        $endpoint = $this->getEndpoint();
+        $host = $this->getHost();
+
+        $encodedNewPath = '/' . $this->encodeKey($newKey);
+        $encodedSourcePath = $this->encodeKey($objectKey);
+        $copySource = '/' . $this->cosConfig['bucket'] . '/' . $encodedSourcePath;
+
+        $signHeaders = [
+            'x-cos-copy-source' => $copySource,
+            'x-cos-metadata-directive' => 'Copy'
+        ];
+
+        try {
+            $authorization = $this->generateAuthorization('PUT', $encodedNewPath, [], $host, $signHeaders);
+            $requestHeaders = [
+                'Host: ' . $host,
+                'Authorization: ' . $authorization,
+                'User-Agent: TEMediaFolder/1.0',
+                'x-cos-copy-source: ' . $copySource,
+                'x-cos-metadata-directive: Copy'
+            ];
+
+            $this->makeRequest($endpoint . $encodedNewPath, 'PUT', $requestHeaders);
+
+            if ($this->encodeKey($objectKey) !== $this->encodeKey($newKey)) {
+                $this->deleteFile($fileUrl, $objectKey);
+            }
+
+            $newUrl = $this->getPublicUrl($newKey);
+            $result = [
+                'ok' => true,
+                'url' => $newUrl,
+                'name' => $newFilename,
+                'id' => $newKey,
+                'directory' => $normalizedDirectory
+            ];
+            if ($this->isImageFile($newFilename)) {
+                $result['thumbnail'] = $this->getThumbnailUrl($newUrl);
+            }
+            return $result;
+        } catch (\Exception $e) {
+            return ['ok' => false, 'msg' => '重命名失败: ' . $e->getMessage()];
+        }
+    }
+
+    public function deleteFile($fileUrl, $fileId = null)
+    {
+        if (!$this->isConfigured()) {
+            return ['ok' => false, 'msg' => 'Missing COS config'];
+        }
+
+        $objectKey = $fileId !== null && $fileId !== '' ? trim($fileId) : $this->extractObjectKey($fileUrl);
+        if ($objectKey === '') {
+            return ['ok' => false, 'msg' => '无法解析对象路径'];
+        }
+
+        try {
+            $endpoint = $this->getEndpoint();
+            $host = $this->getHost();
+            $encodedPath = '/' . implode('/', array_map('rawurlencode', explode('/', $objectKey)));
+            $authorization = $this->generateAuthorization('DELETE', $encodedPath, [], $host);
+
+            $url = $endpoint . $encodedPath;
+            $this->makeRequest($url, 'DELETE', [
+                'Host: ' . $host,
+                'Authorization: ' . $authorization,
+                'User-Agent: TEMediaFolder/1.0'
+            ]);
+
+            return ['ok' => true];
+        } catch (\Exception $e) {
+            return ['ok' => false, 'msg' => '删除失败: ' . $e->getMessage()];
+        }
+    }
+
     public function uploadFile($filePath, $fileName, $targetPath = '')
     {
         if (!$this->isConfigured()) {
@@ -162,7 +284,7 @@ class CosService extends BaseService
             . '/format/webp';
     }
 
-    private function generateAuthorization($method, $path, $query = [], $host = '')
+    private function generateAuthorization($method, $path, $query = [], $host = '', $headers = [])
     {
         $start = time() - 60;
         $end = $start + 3600;
@@ -183,10 +305,20 @@ class CosService extends BaseService
             $paramStrParts[] = rawurlencode($k) . '=' . rawurlencode($v);
         }
         $paramStr = implode('&', $paramStrParts);
-        
-        $headerList = 'host';
-        $headerStr = 'host=' . rawurlencode(strtolower($host));
-        
+
+        $lowerHeaders = ['host' => strtolower($host)];
+        foreach ($headers as $key => $value) {
+            $lowerKey = strtolower(trim($key));
+            $lowerHeaders[$lowerKey] = trim($value);
+        }
+        ksort($lowerHeaders);
+        $headerList = implode(';', array_keys($lowerHeaders));
+        $headerStrParts = [];
+        foreach ($lowerHeaders as $k => $v) {
+            $headerStrParts[] = rawurlencode($k) . '=' . rawurlencode($v);
+        }
+        $headerStr = implode('&', $headerStrParts);
+
         $httpString = strtolower($method) . "\n" . $path . "\n" . $paramStr . "\n" . $headerStr . "\n";
         $httpStringSha1 = sha1($httpString);
         $stringToSign = "sha1\n" . $qSignTime . "\n" . $httpStringSha1 . "\n";
@@ -199,6 +331,26 @@ class CosService extends BaseService
             . '&q-header-list=' . $headerList
             . '&q-url-param-list=' . $paramList
             . '&q-signature=' . $signature;
+    }
+
+    private function sanitizeBaseName($baseName)
+    {
+        $sanitized = preg_replace('/[^a-zA-Z0-9\-_]+/', '_', $baseName);
+        $sanitized = trim($sanitized, '._-');
+        if ($sanitized === '') {
+            $sanitized = 'file_' . date('YmdHis');
+        }
+        return substr($sanitized, 0, 80);
+    }
+
+    private function encodeKey($key)
+    {
+        $key = ltrim(str_replace(['\\'], '/', $key), '/');
+        if ($key === '') {
+            return '';
+        }
+        $segments = array_map('rawurlencode', explode('/', $key));
+        return implode('/', $segments);
     }
 
     private function makeRequest($url, $method = 'GET', $headers = [], $body = null)
@@ -296,7 +448,8 @@ class CosService extends BaseService
                 $fileData = [
                     'name' => $name,
                     'url' => $publicUrl,
-                    'mtime' => $lastModified
+                    'mtime' => $lastModified,
+                    'id' => $key
                 ];
                 
                 // 为图片文件添加缩略图URL
@@ -312,6 +465,21 @@ class CosService extends BaseService
         }
 
         return ['folders' => $folders, 'files' => $files];
+    }
+
+    private function extractObjectKey($fileUrl)
+    {
+        if (empty($fileUrl)) {
+            return '';
+        }
+
+        $path = parse_url($fileUrl, PHP_URL_PATH);
+        if (!$path) {
+            return '';
+        }
+
+        $key = ltrim($path, '/');
+        return rawurldecode($key);
     }
     
     /**
