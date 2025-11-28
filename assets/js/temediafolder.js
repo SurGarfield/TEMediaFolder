@@ -184,7 +184,8 @@
             pageSize: 0,   // 动态计算（行数 × 列数）
             totalItems: 0,
             allFiles: []   // 存储所有文件
-        }
+        },
+        currentPath: ''
     };
 
     var customSelects = (function() {
@@ -513,6 +514,72 @@
         }
     }
 
+    function normalizeDirectoryPath(path) {
+        if (!path && path !== 0) {
+            return '';
+        }
+        var value = String(path);
+        if (!value) return '';
+        value = value.replace(/\\/g, '/');
+        var queryIndex = value.indexOf('?');
+        if (queryIndex !== -1) {
+            value = value.slice(0, queryIndex);
+        }
+        value = value.replace(/\/+/g, '/');
+        value = value.replace(/^\/+/,'').replace(/\/+$/,'');
+        if (!value) return '';
+        var parts = value.split('/');
+        var uploadsIndex = parts.lastIndexOf('uploads');
+        if (uploadsIndex !== -1 && uploadsIndex < parts.length - 1) {
+            return parts.slice(uploadsIndex + 1).join('/');
+        }
+        return value;
+    }
+
+    function setCurrentPath(path) {
+        state.currentPath = normalizeDirectoryPath(path);
+    }
+
+    function extractFileDirectory(file) {
+        if (!file || typeof file !== 'object') {
+            return '';
+        }
+        var dir = file.directory || file.dir || file.path || file.folder || '';
+        var normalized = normalizeDirectoryPath(dir);
+        if (normalized) {
+            return normalized;
+        }
+
+        var url = file.url || file.thumbnail || '';
+        if (url) {
+            var pathname = '';
+            try {
+                pathname = new URL(url, window.location.origin).pathname;
+            } catch (e) {
+                var doubleSlash = url.indexOf('//');
+                if (doubleSlash !== -1) {
+                    var start = url.indexOf('/', doubleSlash + 2);
+                    pathname = start !== -1 ? url.slice(start) : url;
+                } else {
+                    pathname = url;
+                }
+            }
+            pathname = pathname || '';
+            var withoutQuery = pathname.split('?')[0];
+            var segments = withoutQuery.replace(/\\/g, '/').split('/');
+            if (segments.length > 1) {
+                segments.pop();
+                var joined = segments.join('/');
+                normalized = normalizeDirectoryPath(joined);
+                if (normalized) {
+                    return normalized;
+                }
+            }
+        }
+
+        return '';
+    }
+
     var deleteOps = {
         running: false,
         start: function(urls) {
@@ -608,25 +675,33 @@
      */
     function cachedFetch(url, options) {
         options = options || {};
-        var method = options.method || 'GET';
+        var fetchOptions = Object.assign({}, options);
+        var bustCache = !!fetchOptions.bustCache;
+        delete fetchOptions.bustCache;
+
+        var method = fetchOptions.method || 'GET';
         var cacheKey = method + ':' + url;
         
         // 只缓存 GET 请求
         if (method === 'GET') {
-            var cached = state.requestCache[cacheKey];
-            if (cached) {
-                var now = Date.now();
-                // 检查缓存是否过期
-                if (now - cached.timestamp < state.cacheTimeout) {
-                    return Promise.resolve(cached.data);
-                }
-                // 缓存过期，删除
+            if (bustCache) {
                 delete state.requestCache[cacheKey];
+            } else {
+                var cached = state.requestCache[cacheKey];
+                if (cached) {
+                    var now = Date.now();
+                    // 检查缓存是否过期
+                    if (now - cached.timestamp < state.cacheTimeout) {
+                        return Promise.resolve(cached.data);
+                    }
+                    // 缓存过期，删除
+                    delete state.requestCache[cacheKey];
+                }
             }
         }
         
         // 发起请求
-        return fetch(url, options)
+        return fetch(url, fetchOptions)
             .then(function(response) {
                 if (!response.ok) {
                     throw new Error('HTTP ' + response.status);
@@ -939,6 +1014,8 @@
                     // ym not selected
                     return;
                 }
+
+                setCurrentPath(year + '/' + month);
                 
                 var items = [];
                 if (TEMF_CONF.data && TEMF_CONF.data[year] && TEMF_CONF.data[year][month]) {
@@ -950,6 +1027,90 @@
             } catch (e) {
                 // render error
             }
+        },
+
+        updateDataFromResponse: function(payload) {
+            if (!payload || !Array.isArray(payload.files)) {
+                return;
+            }
+
+            var grouped = {};
+            var latestMtime = 0;
+            var latestYear = null;
+            var latestMonth = null;
+
+            if (payload.groups && typeof payload.groups === 'object') {
+                Object.keys(payload.groups).forEach(function(ym) {
+                    var parts = ym.split('-');
+                    if (parts.length !== 2) return;
+                    var year = parts[0];
+                    var month = parts[1].padStart(2, '0');
+                    grouped[year] = grouped[year] || {};
+                    grouped[year][month] = (payload.groups[ym] || []).map(function(item) {
+                        var copy = Object.assign({}, item);
+                        copy.group = copy.group || (year + '-' + month);
+                        copy.mtime = copy.mtime || 0;
+                        return copy;
+                    });
+                });
+            }
+
+            if (Object.keys(grouped).length === 0) {
+                payload.files.forEach(function(item) {
+                    if (!item || !item.group) return;
+                    var parts = String(item.group).split('-');
+                    if (parts.length !== 2) return;
+                    var year = parts[0];
+                    var month = parts[1].padStart(2, '0');
+                    grouped[year] = grouped[year] || {};
+                    grouped[year][month] = grouped[year][month] || [];
+                    grouped[year][month].push(Object.assign({}, item));
+                });
+            }
+
+            Object.keys(grouped).forEach(function(year) {
+                Object.keys(grouped[year]).forEach(function(month) {
+                    grouped[year][month].forEach(function(item) {
+                        var ts = item.mtime || 0;
+                        if (ts > latestMtime) {
+                            latestMtime = ts;
+                            latestYear = year;
+                            latestMonth = month;
+                        }
+                    });
+                });
+            });
+
+            TEMF_CONF.data = grouped;
+            TEMF_CONF.latest = latestYear && latestMonth ? (latestYear + '-' + latestMonth) : '';
+
+            if (payload.paginationRows) {
+                TEMF_CONF.paginationRows = payload.paginationRows;
+            }
+            if (payload.thumbSize) {
+                TEMF_CONF.thumbSize = payload.thumbSize;
+            }
+        },
+
+        fetchLatest: function(options) {
+            var sec = byId('temediafolder');
+            if (!sec) return Promise.resolve();
+            var url = sec.getAttribute('data-local-list');
+            if (!url) return Promise.resolve();
+
+            var fetchOptions = options && options.bustCache ? { bustCache: true } : {};
+            return cachedFetch(url, fetchOptions)
+                .then(function(resp) {
+                    if (!resp || resp.ok === false) {
+                        return;
+                    }
+                    local.updateDataFromResponse(resp);
+                    local.buildYearMonth();
+                    local.renderCurrentMonth();
+                })
+                .catch(function(err) {
+                    console.error('[TEMF] Failed to refresh local files', err);
+                });
         }
     };
     
@@ -959,18 +1120,19 @@
          * 初始化目录选择器
          * @param {string} storageType - 'cos' 或 'oss'
          */
-        init: function(storageType) {
+        init: function(storageType, options) {
             var dir = byId('temf-dir');
             var sub = byId('temf-subdir');
             if (!dir || !sub) return;
             
             this.initDirectorySelectors(dir, sub);
+            setCurrentPath('');
             
             var self = this;
             this.fetch(storageType, '', function(data) {
                 self.populateFolders(dir, data.folders || []);
                 ui.renderFiles(data.files || []);
-            });
+            }, options);
         },
         
         /**
@@ -1006,7 +1168,7 @@
         /**
          * 通用fetch方法（带缓存）
          */
-        fetch: function(storageType, path, callback) {
+        fetch: function(storageType, path, callback, options) {
             var sec = byId('temediafolder');
             if (!sec) return;
             
@@ -1020,7 +1182,8 @@
             }
 
             // 使用统一的 cachedFetch（自动处理缓存）
-            cachedFetch(url)
+            var fetchOptions = (options && options.bustCache) ? { bustCache: true } : {};
+            cachedFetch(url, fetchOptions)
                 .then(function(data) {
                     callback && callback(data);
                 })
@@ -1047,11 +1210,13 @@
     };
     
     var lsky = {
-        init: function() {
+        init: function(options) {
             var dir = byId('temf-dir');
             var sub = byId('temf-subdir');
             if (!dir || !sub) return;
             
+            setCurrentPath('');
+
             // 兰空图床使用特殊的选择器
             dir.innerHTML = '';
             
@@ -1084,10 +1249,10 @@
             this.fetch(fetchPath, function(data) {
                 ui.renderFiles(data.files || []);
                 customSelects.sync('temf-dir');
-            });
+            }, options);
         },
         
-        fetch: function(path, callback) {
+        fetch: function(path, callback, options) {
             var sec = byId('temediafolder');
             if (!sec) return;
             
@@ -1104,7 +1269,8 @@
                 url += (base.indexOf('?') >= 0 ? '&' : '?') + 'temf_path=' + encodeURIComponent(path);
             }
 
-            cachedFetch(url)
+            var fetchOptions = (options && options.bustCache) ? { bustCache: true } : {};
+            cachedFetch(url, fetchOptions)
                 .then(function(data) {
                     callback && callback(data);
                 })
@@ -1186,6 +1352,7 @@
         
         switchTo: function(storageType) {
             state.currentStorage = storageType;
+            setCurrentPath('');
             
             // 性能优化：切换模式时清除缓存
             ui._clearCache();
@@ -1390,19 +1557,20 @@
             return lskyStorage && lskyStorage.hasAlbumId;
         },
         
-        loadLskyData: function() {
+        loadLskyData: function(options) {
             // 根据当前选择加载数据
             var dir = byId('temf-dir');
             var currentSelection = dir ? dir.value : '';
             var fetchPath = currentSelection === 'album' ? 'album' : '';
+            setCurrentPath('');
             
             this.fetch(fetchPath, function(data) {
                     ui.renderFiles(data.files || []);
                     multi.finishSwitchAnimation();
-            });
+            }, options);
         },
         
-        loadLocalData: function() {
+        loadLocalData: function(options) {
             // 通过API获取本地文件数据
             this.fetch('', function(data) {
                 if (data.ok && data.files) {
@@ -1481,7 +1649,7 @@
             });
         },
         
-        fetch: function(path, callback) {
+        fetch: function(path, callback, options) {
             var sec = byId('temediafolder');
             if (!sec || !state.currentStorage) return;
 
@@ -1500,16 +1668,30 @@
                 params.push('temf_path=' + encodeURIComponent(path));
             }
 
+            var effectivePath = path || '';
+            if (state.currentStorage === 'lsky') {
+                effectivePath = '';
+            }
+            setCurrentPath(effectivePath);
+
+            var fetchOptions = { bustCache: !!(options && options.bustCache) };
+
+            if (fetchOptions.bustCache) {
+                // 强制绕过缓存时生成唯一查询参数
+                params.push('_ts=' + Date.now());
+            }
+
             url += (hasQuery ? '&' : '?') + params.join('&');
 
-            cachedFetch(url)
+            cachedFetch(url, fetchOptions)
                 .then(function(data) {
                     callback && callback(data);
                 })
-                .catch(function() {
+                .catch(function(error) {
+                    console.error('[TEMF] 多存储 fetch 失败', error);
                     callback && callback({folders: [], files: []});
                 });
-        }
+        },
     };
     
     var rename = {
@@ -1945,8 +2127,41 @@
             if (!body) {
                 return;
             }
-            
-            if (!files || !files.length) {
+
+            var list = Array.isArray(files) ? files : [];
+            var seenKeys = new Set();
+            var uniqueFiles = [];
+
+            list.forEach(function(file) {
+                if (!file) return;
+                var key = file.url ? ('url:' + file.url) : (file.name ? ('name:' + file.name) : null);
+                if (!key) {
+                    try {
+                        key = JSON.stringify(file);
+                    } catch (e) {
+                        key = String(uniqueFiles.length);
+                    }
+                }
+                if (!seenKeys.has(key)) {
+                    seenKeys.add(key);
+                    uniqueFiles.push(file);
+                }
+            });
+
+            var activeStorage = TEMF_CONF.source === 'multi'
+                ? String(state.currentStorage || '').toLowerCase()
+                : String(TEMF_CONF.source || '').toLowerCase();
+
+            var targetPath = state.currentPath ? normalizeDirectoryPath(state.currentPath).toLowerCase() : '';
+            var shouldFilter = !!targetPath && activeStorage !== 'lsky';
+
+            var filteredFiles = shouldFilter ? uniqueFiles.filter(function(file) {
+                var fileDir = extractFileDirectory(file);
+                var normalizedFileDir = normalizeDirectoryPath(fileDir).toLowerCase();
+                return normalizedFileDir === targetPath;
+            }) : uniqueFiles;
+
+            if (filteredFiles.length === 0) {
                 body.innerHTML = '<p class="description">无图片</p>';
                 selection.clear();
                 pagination.hide();
@@ -1957,8 +2172,8 @@
             state.pagination.pageSize = calculatePageSize();
             
             // 保存所有文件到状态
-            state.pagination.allFiles = files;
-            state.pagination.totalItems = files.length;
+            state.pagination.allFiles = filteredFiles;
+            state.pagination.totalItems = filteredFiles.length;
             
             // 重置到第一页
             state.pagination.currentPage = 1;
@@ -2403,15 +2618,22 @@
             this.currentIndex = 0;
             this.totalFiles = files.length;
 
-            progress.show();
-            progress.update(0, this.totalFiles);
+            if (!this.totalFiles) {
+                return;
+            }
+
+            var firstFile = files[0] || null;
+            var firstName = firstFile && firstFile.name ? firstFile.name : '上传文件';
+
+            progress.show(firstName, this.totalFiles);
+            progress.update(0, this.totalFiles, firstName);
 
             this.uploadNext();
         },
         
         uploadNext: function() {
             if (this.currentIndex >= this.queue.length) {
-                progress.hide();
+                progress.finish();
                 return;
             }
             
@@ -2638,10 +2860,12 @@
             
             if (progress.setError) progress.setError(msg);
             
-            // 延迟隐藏进度条，让用户看到错误信息
-            setTimeout(function() {
-                progress.hide();
-            }, 2000);
+            if (!isBatch) {
+                // 单文件上传时，短暂展示错误后隐藏
+                setTimeout(function() {
+                    progress.hide();
+                }, 2000);
+            }
             
             if (isBatch) {
                 this.onUploadComplete(false, file.name);
@@ -3031,14 +3255,26 @@
         titleEl: null,
         statusEl: null,
         barEl: null,
+        cardEl: null,
         currentFileIndex: 0,
         totalFiles: 0,
 
         ensureCreated: function() {
-            if (this.overlay) return;
+            var dialog = document.querySelector('#temf-modal .temf-dialog');
+            if (!dialog) return;
 
-            var body = document.querySelector('#temf-modal .temf-body');
-            if (!body) return;
+            if (this.overlay) {
+                if (!this.overlay.isConnected) {
+                    dialog.appendChild(this.overlay);
+                }
+                if (!this.titleEl || !this.statusEl || !this.barEl) {
+                    this.titleEl = this.overlay.querySelector('.temf-progress-title');
+                    this.statusEl = this.overlay.querySelector('.temf-progress-status');
+                    this.barEl = this.overlay.querySelector('.temf-progress-bar');
+                    this.cardEl = this.overlay.querySelector('.temf-progress-card');
+                }
+                return;
+            }
 
             var overlay = document.createElement('div');
             overlay.className = 'temf-progress-overlay';
@@ -3049,36 +3285,41 @@
                     '<div class="temf-progress-status">上传中... 0% (0/0)</div>' +
                 '</div>';
 
-            body.appendChild(overlay);
+            dialog.appendChild(overlay);
 
             this.overlay = overlay;
             this.titleEl = overlay.querySelector('.temf-progress-title');
             this.statusEl = overlay.querySelector('.temf-progress-status');
             this.barEl = overlay.querySelector('.temf-progress-bar');
+            this.cardEl = overlay.querySelector('.temf-progress-card');
         },
 
-        show: function(initialTitle) {
+        show: function(initialTitle, totalFiles) {
             this.ensureCreated();
             if (!this.overlay) return;
 
             this.overlay.style.display = 'flex';
             this.overlay.classList.remove('temf-progress-error');
-            var card = this.overlay.querySelector('.temf-progress-card');
-            if (card) card.classList.remove('temf-progress-error');
+            if (this.cardEl) {
+                this.cardEl.classList.remove('temf-progress-error');
+            }
 
+            var titleText = initialTitle || '上传文件';
             if (this.titleEl) {
-                this.titleEl.textContent = initialTitle || '上传文件';
-                this.titleEl.title = initialTitle || '';
+                this.titleEl.textContent = titleText;
+                this.titleEl.title = titleText;
             }
             if (this.barEl) {
                 this.barEl.style.width = '0%';
             }
             if (this.statusEl) {
-                this.statusEl.textContent = '上传中... 0%';
+                var total = Number.isFinite(totalFiles) && totalFiles > 0 ? Math.max(0, totalFiles) : 0;
+                var suffix = total ? ' (0/' + total + ')' : '';
+                this.statusEl.textContent = '上传中... 0%' + suffix;
                 this.statusEl.classList.remove('error');
             }
             this.currentFileIndex = 0;
-            this.totalFiles = 0;
+            this.totalFiles = Number.isFinite(totalFiles) && totalFiles > 0 ? totalFiles : 0;
         },
 
         hide: function() {
@@ -3086,6 +3327,9 @@
                 this.overlay.style.display = 'none';
                 if (this.statusEl) {
                     this.statusEl.classList.remove('error');
+                }
+                if (this.cardEl) {
+                    this.cardEl.classList.remove('temf-progress-error');
                 }
             }
         },
@@ -3098,8 +3342,20 @@
                 this.titleEl.textContent = fileName;
                 this.titleEl.title = fileName;
             }
-            this.currentFileIndex = total > 0 ? Math.min(current + 1, total) : 0;
-            this.totalFiles = total;
+            if (typeof total === 'number' && total >= 0) {
+                this.totalFiles = total;
+            }
+
+            if (typeof current === 'number') {
+                if (this.totalFiles > 0) {
+                    this.currentFileIndex = Math.min(current + 1, this.totalFiles);
+                } else {
+                    this.currentFileIndex = 0;
+                }
+            }
+            if (this.cardEl) {
+                this.cardEl.classList.remove('temf-progress-error');
+            }
             this.updateFileProgress(0);
         },
 
@@ -3113,7 +3369,7 @@
 
             if (this.statusEl) {
                 var displayTotal = this.totalFiles || 0;
-                var displayCurrent = displayTotal ? Math.max(1, this.currentFileIndex) : 0;
+                var displayCurrent = displayTotal ? Math.min(Math.max(this.currentFileIndex, 1), displayTotal) : 0;
                 var suffix = displayTotal ? ' (' + displayCurrent + '/' + displayTotal + ')' : '';
                 this.statusEl.textContent = '上传中... ' + Math.round(percent) + '%' + suffix;
                 this.statusEl.classList.remove('error');
@@ -3132,6 +3388,32 @@
                 this.statusEl.textContent = '上传失败: ' + msg;
                 this.statusEl.classList.add('error');
             }
+        },
+
+        finish: function() {
+            this.ensureCreated();
+            if (!this.overlay) return;
+
+            if (this.totalFiles > 0) {
+                this.currentFileIndex = this.totalFiles;
+            }
+
+            if (this.barEl) {
+                this.barEl.style.width = '100%';
+            }
+
+            var isError = this.statusEl && this.statusEl.classList.contains('error');
+            if (this.statusEl && !isError) {
+                var total = this.totalFiles || 0;
+                var suffix = total ? ' (' + total + '/' + total + ')' : '';
+                this.statusEl.textContent = '上传完成 100%' + suffix;
+                this.statusEl.classList.remove('error');
+            }
+
+            var self = this;
+            setTimeout(function() {
+                self.hide();
+            }, 800);
         }
     };
     
@@ -3153,7 +3435,94 @@
     var debouncedUpload = debounce(function() {
         fileOps.upload();
     }, 300);
-    
+
+    function refreshMultiStorage() {
+        var storage = state.currentStorage;
+        if (!storage && state.availableStorages && state.availableStorages.length > 0) {
+            storage = state.availableStorages[0].key;
+        }
+
+        if (!storage) {
+            return;
+        }
+
+        if (state.currentStorage !== storage) {
+            state.currentStorage = storage;
+        }
+
+        if (storage === 'local') {
+            multi.loadLocalData({ bustCache: true });
+            return;
+        }
+
+        if (storage === 'lsky') {
+            multi.loadLskyData({ bustCache: true });
+            return;
+        }
+
+        if (storage === 'cos' || storage === 'oss' || storage === 'upyun') {
+            var subSelect = byId('temf-subdir');
+            if (subSelect && subSelect.value) {
+                handleCloudStorageDirectoryChange(subSelect, storage, { bustCache: true, forceRefresh: true });
+                return;
+            }
+
+            var dirSelect = byId('temf-dir');
+            if (dirSelect) {
+                handleCloudStorageDirectoryChange(dirSelect, storage, { bustCache: true, forceRefresh: true });
+                return;
+            }
+
+            multi.fetch('', function(data) {
+                ui.renderFiles(data.files || []);
+            }, { bustCache: true });
+            return;
+        }
+
+        multi.fetch('', function(data) {
+            ui.renderFiles(data.files || []);
+        }, { bustCache: true });
+    }
+
+    function refreshCurrentDirectory() {
+        try {
+            var source = TEMF_CONF.source;
+
+            if (source === 'multi') {
+                refreshMultiStorage();
+                return;
+            }
+
+            if (source === 'local') {
+                local.fetchLatest({ bustCache: true });
+                return;
+            }
+
+            if (source === 'lsky') {
+                lsky.init({ bustCache: true });
+                return;
+            }
+
+            if (source === 'cos' || source === 'oss' || source === 'upyun') {
+                var subSelect = byId('temf-subdir');
+                if (subSelect && subSelect.value) {
+                    handleCloudStorageDirectoryChange(subSelect, source, { bustCache: true, forceRefresh: true });
+                    return;
+                }
+
+                var dirSelect = byId('temf-dir');
+                if (dirSelect) {
+                    handleCloudStorageDirectoryChange(dirSelect, source, { bustCache: true, forceRefresh: true });
+                    return;
+                }
+
+                cloudStorage.init(source, { bustCache: true });
+            }
+        } catch (err) {
+            console.error('[TEMF] 刷新目录失败', err);
+        }
+    }
+
     document.addEventListener('click', function(e) {
         var target = e.target;
         
@@ -3210,6 +3579,22 @@
                 debouncedUpload();
                 e.preventDefault();
             }
+
+        var refreshBtn = null;
+        if (target) {
+            if (target.id === 'temf-refresh') {
+                refreshBtn = target;
+            } else if (typeof target.closest === 'function') {
+                refreshBtn = target.closest('#temf-refresh');
+            }
+        }
+
+        if (refreshBtn) {
+            e.preventDefault();
+            console.log('[TEMF] Refresh button clicked');
+            refreshCurrentDirectory();
+            return;
+        }
     });
 
     document.addEventListener('dblclick', function(e) {
@@ -3224,8 +3609,17 @@
     /**
      * 处理云存储目录切换（合并COS/OSS逻辑）
      */
-    function handleCloudStorageDirectoryChange(target, currentSource) {
-        var fetchFunction = TEMF_CONF.source === 'multi' ? multi.fetch : cloudStorage.fetch.bind(cloudStorage, currentSource);
+    function handleCloudStorageDirectoryChange(target, currentSource, options) {
+        options = options || {};
+        var isMulti = TEMF_CONF.source === 'multi';
+
+        if (options.forceRefresh && isMulti && currentSource && state.currentStorage !== currentSource) {
+            state.currentStorage = currentSource;
+        }
+
+        var fetchFunction = isMulti
+            ? function(path, callback, opts) { multi.fetch(path, callback, Object.assign({}, opts, { bustCache: options.bustCache })); }
+            : function(path, callback, opts) { cloudStorage.fetch(currentSource, path, callback, Object.assign({}, opts, { bustCache: options.bustCache })); };
         
         if (target.id === 'temf-dir') {
                     var path = target.value || '';
@@ -3236,6 +3630,8 @@
                     opt.value = '';
                     opt.textContent = '/';
                     sub.appendChild(opt);
+
+                    setCurrentPath(path);
                     
                     fetchFunction(path, function(data) {
                         var folders = data.folders || [];
@@ -3247,16 +3643,17 @@
                         });
                         customSelects.sync('temf-subdir');
                         ui.renderFiles(data.files || []);
-                    });
+                    }, options);
         } else if (target.id === 'temf-subdir') {
                     var p1 = (byId('temf-dir').value || '');
                     var p2 = target.value || '';
                     var path = p2 ? (p1 ? p1 + '/' + p2 : p2) : p1;
+                    setCurrentPath(path);
                     
                     fetchFunction(path, function(data) {
                 ui.renderFiles(data.files || []);
                 customSelects.sync('temf-dir');
-            });
+            }, options);
         }
     }
     
@@ -3277,6 +3674,7 @@
             } else if (currentSource === 'lsky') {
                 if (target && target.id === 'temf-dir') {
                     var selection = target.value;
+                    setCurrentPath('');
                     
                     // 多模式下使用multi.fetch，单模式下使用lsky.fetch
                     var fetchFunction = TEMF_CONF.source === 'multi' ? multi.fetch : lsky.fetch;

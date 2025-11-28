@@ -37,7 +37,6 @@ class LocalFileService extends BaseService
         
         $groups = [];
         $fileCount = 0;
-        $maxFiles = $maxPerMonth > 0 ? $maxPerMonth * 12 : 0; // 限制总文件数量防止内存溢出
 
         // 性能优化：使用更高效的迭代器配置
         $iterator = new \RecursiveIteratorIterator(
@@ -46,11 +45,6 @@ class LocalFileService extends BaseService
         );
 
         foreach ($iterator as $fileInfo) {
-            // 性能优化：提前退出条件
-            if ($maxFiles > 0 && $fileCount >= $maxFiles) {
-                break;
-            }
-
             if (!$fileInfo->isFile()) {
                 continue;
             }
@@ -613,6 +607,24 @@ class LocalFileService extends BaseService
                     $fileData['thumbnail'] = $this->getThumbnailUrl($fileUrl);
                 }
 
+                $yearFromPath = null;
+                $monthFromPath = null;
+                if ($directoryPath !== '') {
+                    $dirParts = explode('/', $directoryPath);
+                    if (count($dirParts) >= 2) {
+                        $possibleYear = $dirParts[count($dirParts) - 2];
+                        $possibleMonth = $dirParts[count($dirParts) - 1];
+                        if (preg_match('/^\d{4}$/', $possibleYear) && preg_match('/^\d{1,2}$/', $possibleMonth)) {
+                            $yearFromPath = $possibleYear;
+                            $monthFromPath = (int)$possibleMonth;
+                        }
+                    }
+                }
+
+                if ($yearFromPath !== null && $monthFromPath !== null) {
+                    $fileData['group'] = sprintf('%s-%02d', $yearFromPath, $monthFromPath);
+                }
+                
                 $files[] = $fileData;
             }
         } catch (\UnexpectedValueException $e) {

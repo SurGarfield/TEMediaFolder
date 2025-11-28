@@ -4,7 +4,7 @@
  * 媒体预览（支持本地、腾讯COS、阿里云OSS、又拍云和兰空图床）
  * @package TEMediaFolder
  * @author 森木志
- * @version 3.0.1
+ * @version 3.0.2
  * @link https://github.com/SurGarfield/TEMediaFolder
  */
 
@@ -74,6 +74,7 @@ class Plugin implements PluginInterface
         \Utils\Helper::addAction('temf-lsky-list', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-lsky-upload', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-lsky-delete', 'TEMediaFolder_Action');
+        \Utils\Helper::addAction('temf-local-list', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-local-upload', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-local-rename', 'TEMediaFolder_Action');
         \Utils\Helper::addAction('temf-local-delete', 'TEMediaFolder_Action');
@@ -221,6 +222,7 @@ class Plugin implements PluginInterface
             \Utils\Helper::removeAction('temf-lsky-list');
             \Utils\Helper::removeAction('temf-lsky-upload');
             \Utils\Helper::removeAction('temf-lsky-delete');
+            \Utils\Helper::removeAction('temf-local-list');
             \Utils\Helper::removeAction('temf-local-upload');
             \Utils\Helper::removeAction('temf-local-rename');
             \Utils\Helper::removeAction('temf-local-delete');

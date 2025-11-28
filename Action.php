@@ -35,6 +35,7 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
         'temf-lsky-list' => ['handler' => 'handleLskyListAction', 'type' => 'lsky'],
         'temf-lsky-upload' => ['handler' => 'handleCloudStorageUpload', 'type' => 'lsky'],
         'temf-lsky-delete' => ['handler' => 'handleCloudDeleteAction', 'type' => 'lsky'],
+        'temf-local-list' => ['handler' => 'handleLocalListAction', 'type' => null],
         'temf-local-upload' => ['handler' => 'handleLocalUploadAction', 'type' => 'local'],
         'temf-local-rename' => ['handler' => 'handleLocalRenameAction', 'type' => null],
         'temf-local-delete' => ['handler' => 'handleLocalDeleteAction', 'type' => null],
@@ -315,6 +316,42 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
         return $this->serviceCache[$storageType];
     }
     
+    private function handleLocalListAction()
+    {
+        try {
+            $service = $this->getService('local');
+            if (!$service) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => 'Service not found']);
+                return;
+            }
+
+            $files = [];
+            $groups = $service->getFileGroups();
+            foreach ($groups as $ym => $items) {
+                foreach ($items as $item) {
+                    if (!isset($item['group'])) {
+                        $item['group'] = $ym;
+                    }
+                    $files[] = $item;
+                }
+            }
+
+            $config = ConfigManager::getInstance();
+            $paginationRows = max(1, intval($config->get('paginationRows', 4)));
+            $thumbSize = max(1, intval($config->get('thumbSize', 120)));
+
+            $this->sendJsonResponse([
+                'ok' => true,
+                'files' => $files,
+                'groups' => $groups,
+                'paginationRows' => $paginationRows,
+                'thumbSize' => $thumbSize
+            ]);
+        } catch (\Exception $e) {
+            $this->sendJsonResponse(['ok' => false, 'msg' => 'Failed to load local files: ' . $e->getMessage()]);
+        }
+    }
+
     private function handleLocalRenameAction()
     {
         try {

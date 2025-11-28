@@ -86,6 +86,8 @@ class Renderer
             $localUploadUrl = \Widget\Security::alloc()->getIndex('/action/temf-local-upload');
             $localRenameUrl = \Widget\Security::alloc()->getIndex('/action/temf-local-rename');
             $localDeleteUrl = \Widget\Security::alloc()->getIndex('/action/temf-local-delete');
+            $localListUrl = \Widget\Security::alloc()->getIndex('/action/temf-local-list');
+            echo ' data-local-list="' . htmlspecialchars($localListUrl) . '"';
             echo ' data-local-upload="' . htmlspecialchars($localUploadUrl) . '"';
             echo ' data-local-rename="' . htmlspecialchars($localRenameUrl) . '"';
             echo ' data-local-delete="' . htmlspecialchars($localDeleteUrl) . '"';
@@ -111,11 +113,15 @@ class Renderer
             echo '<div class="temf-title-container">';
             echo '<div class="temf-title-wrapper">';
             echo '<strong id="temf-title">' . _t('素材库') . '</strong>';
+            echo '<button type="button" id="temf-refresh" class="temf-refresh-button" title="' . _t('刷新当前目录') . '">' . _t('刷新') . '</button>';
             echo '<div id="temf-storage-switcher" class="temf-storage-switcher"></div>';
             echo '</div>';
             echo '</div>';
         } else {
+            echo '<div class="temf-title-wrapper">';
             echo '<strong id="temf-title">' . _t('素材库') . '</strong>';
+            echo '<button type="button" id="temf-refresh" class="temf-refresh-button" title="' . _t('刷新当前目录') . '">' . _t('刷新') . '</button>';
+            echo '</div>';
         }
         echo '<div class="temf-actions-bar">';
         echo '<div class="temf-select-group">';
@@ -249,15 +255,15 @@ class Renderer
         echo '.temf-select-holder[data-select="temf-month"]{flex:0 1 110px;}';
         echo '.temf-button-group .btn{flex:0 0 auto;}';
         echo '.temf-native-select{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none;}';
-        echo '.temf-select-trigger{display:flex;align-items:center;justify-content:space-between;width:100%;border:1px solid rgba(0,0,0,.18);background:#fff;padding:8px 36px 8px 14px;border-radius:6px;color:#1f1f1f;font-size:13px;min-height:38px;transition:border-color .2s ease, box-shadow .2s ease, color .2s ease;cursor:pointer;text-align:left;gap:12px;}';
+        echo '.temf-select-trigger{display:flex;align-items:center;justify-content:flex-start;width:100%;border:1px solid rgba(0,0,0,.18);background:#fff;padding:8px 42px 8px 14px;border-radius:6px;color:#1f1f1f;font-size:13px;min-height:38px;transition:border-color .2s ease, box-shadow .2s ease, color .2s ease;cursor:pointer;text-align:left;gap:12px;position:relative;}';
         echo '.temf-select-holder[data-disabled="true"] .temf-select-trigger{opacity:.6;cursor:not-allowed;}';
         echo '.temf-select-trigger:hover{border-color:rgba(0,0,0,.45);color:#000;}';
         echo '.temf-select-holder.open .temf-select-trigger{border-color:#000;box-shadow:0 0 0 3px rgba(0,0,0,.08);}';
         echo '.temf-select-trigger:focus-visible{outline:3px solid rgba(0,0,0,.18);}';
         echo '.temf-select-label{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}';
-        echo '.temf-select-caret{flex:0 0 auto;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #1f1f1f;transition:transform .2s ease;}';
-        echo '.temf-select-holder.open .temf-select-caret{transform:rotate(180deg);}';
-        echo '.temf-select-dropdown{position:absolute;top:calc(100% + 6px);left:0;right:0;background:#fff;border:1px solid rgba(0,0,0,.16);box-shadow:0 16px 32px rgba(0,0,0,.18);border-radius:6px;padding:6px 0;display:none;flex-direction:column;max-height:240px;overflow:auto;z-index:1050;}';
+        echo '.temf-select-caret{flex:0 0 auto;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #1f1f1f;transition:transform .2s ease;position:absolute;right:14px;top:50%;transform:translateY(-50%);}';
+        echo '.temf-select-holder.open .temf-select-caret{transform:translateY(-50%) rotate(180deg);}';
+        echo '.temf-select-dropdown{position:absolute;top:calc(100% + 3px);left:0;right:0;background:#fff;border:1px solid rgba(0,0,0,.16);box-shadow:0 16px 32px rgba(0,0,0,.18);border-radius:6px;padding: 0;display:none;flex-direction:column;max-height:240px;overflow:auto;z-index:1050;}';
         echo '.temf-select-holder.open .temf-select-dropdown{display:flex;}';
         echo '.temf-select-option{background:transparent;border:none;padding:8px 14px;text-align:left;font-size:13px;color:#1f1f1f;cursor:pointer;transition:background .15s ease,color .15s ease;display:flex;align-items:center;gap:8px;}';
         echo '.temf-select-option:hover{background:#f0f0f0;color:#000;}';
@@ -327,6 +333,9 @@ class Renderer
         
         echo '.temf-title-container{flex:1;min-width:0}';
         echo '.temf-title-wrapper{position:relative;display:inline-flex;align-items:center;gap:8px}';
+        echo '#temf-refresh.temf-refresh-button{flex:0 0 auto;border:1px solid rgba(0,0,0,.18);background:#fff;color:#1f1f1f;font-size:12px;padding:4px 14px;border-radius:999px;line-height:1;min-height:28px;cursor:pointer;transition:all .2s ease;font-weight:500;}';
+        echo '#temf-refresh.temf-refresh-button:hover{border-color:#000;background:#000;color:#fff;}';
+        echo '#temf-refresh.temf-refresh-button:focus-visible{outline:3px solid rgba(0,0,0,.18);}';
         echo '.temf-title-container #temf-title{cursor:pointer;position:relative;user-select:none}';
         // 进度条由蒙版居中展示
         echo '.temf-title-container #temf-title:hover{color:#000}';
