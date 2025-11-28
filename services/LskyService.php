@@ -9,6 +9,7 @@ class LskyService
     private $config;
     private $lskyConfig;
     private $cachedStorageId = null;
+    private $remoteSizeCache = [];
 
     public function __construct(ConfigManager $config)
     {
@@ -78,7 +79,9 @@ class LskyService
             $allFiles[] = [
                 'name' => $item['name'] ?? ($item['filename'] ?? 'unknown'),
                 'url' => $item['public_url'] ?? ($item['links']['url'] ?? ($item['url'] ?? '')),
-                'size' => $item['size'] ?? 0,
+                'size' => $this->normalizeSizeValue($item),
+                'size_human' => $this->extractReadableSize($item),
+                'directory' => $this->resolveDirectoryFromItem($item),
                 'id' => $item['id'] ?? ($item['key'] ?? ''),
                 'albums' => $item['albums'] ?? [],
             ];
@@ -124,6 +127,18 @@ class LskyService
         }
         
         return null;
+    }
+
+    private function getNestedValue(array $source, array $path)
+    {
+        $current = $source;
+        foreach ($path as $segment) {
+            if (!is_array($current) || !array_key_exists($segment, $current)) {
+                return null;
+            }
+            $current = $current[$segment];
+        }
+        return $current;
     }
 
   
@@ -254,6 +269,26 @@ class LskyService
         // 缓存默认值
         $this->cachedStorageId = '1';
         return $this->cachedStorageId;
+    }
+
+    private function resolveStorageId($forceV1 = false)
+    {
+        $configured = $this->lskyConfig['strategyId'] ?? null;
+        if (!empty($configured)) {
+            return $forceV1 ? (string) $configured : (int) $configured;
+        }
+
+        if ($forceV1) {
+            $sid = $this->resolveStrategyIdV1();
+            return $sid ?: '1';
+        }
+
+        $valid = $this->getValidStorageId();
+        if (!empty($valid)) {
+            return (int) $valid;
+        }
+
+        return 1;
     }
 
     /**
@@ -430,14 +465,16 @@ class LskyService
                              // 根据官方API文档，V2返回的字段结构
                              $url = $item['public_url'] ?? ($item['links']['url'] ?? ($item['url'] ?? ''));
                              $name = $item['name'] ?? ($item['filename'] ?? 'unknown');
-                             
+
                              $fileData = [
-                                 'name' => $name,
-                                 'url' => $url,
-                                 'size' => $item['size'] ?? 0,
-                                 'id' => $item['id'] ?? ($item['key'] ?? ''),
-                             ];
-                             
+                                'name' => $name,
+                                'url' => $url,
+                                'size' => $this->normalizeSizeValue($item),
+                                'size_human' => $this->extractReadableSize($item),
+                                'directory' => $this->resolveDirectoryFromItem($item, $url),
+                                'id' => $item['id'] ?? ($item['key'] ?? ''),
+                            ];
+
                              // 为图片文件添加缩略图URL
                              if ($this->isImageFile($name)) {
                                  $fileData['thumbnail'] = $this->getThumbnailUrl($url, $item);
@@ -474,6 +511,338 @@ class LskyService
             
             return ['folders' => [], 'files' => []];
         }
+    }
+
+    private function normalizeSizeValue(array $item)
+    {
+        $candidates = [
+            $item['size'] ?? null,
+            $item['origin_size'] ?? null,
+            $item['size_raw'] ?? null,
+            $item['filesize'] ?? null,
+            $item['file_size'] ?? null,
+            $item['metadata']['size'] ?? null,
+            $item['meta']['size'] ?? null,
+        ];
+
+        $nestedPaths = [
+            ['origin', 'size'],
+            ['origin', 'filesize'],
+            ['origin', 'file_size'],
+            ['origin', 'size_raw'],
+            ['origin', 'size_origin'],
+            ['origin', 'origin_size'],
+            ['origin', 'metadata', 'size'],
+            ['links', 'origin', 'size'],
+        ];
+
+        foreach ($nestedPaths as $path) {
+            $candidates[] = $this->getNestedValue($item, $path);
+        }
+
+        foreach ($candidates as $value) {
+            $normalized = $this->parseSizeValue($value);
+            if ($normalized > 0) {
+                $resolved = (int) round($normalized);
+                if ($resolved > 65536) {
+                    return $resolved;
+                }
+                $fallback = $this->resolveOriginSize($item, $resolved);
+                return $fallback > 0 ? $fallback : $resolved;
+            }
+        }
+
+        return $this->resolveOriginSize($item, 0);
+    }
+
+    private function extractReadableSize(array $item)
+    {
+        $keys = ['size_readable', 'sizeReadable', 'size_human', 'sizeHuman', 'size_format'];
+        foreach ($keys as $key) {
+            if (!empty($item[$key]) && is_string($item[$key])) {
+                return $item[$key];
+            }
+        }
+        return null;
+    }
+
+    private function parseSizeValue($value)
+    {
+        if ($value === null) {
+            return 0;
+        }
+
+        if (is_numeric($value)) {
+            $floatValue = (float) $value;
+            return $floatValue > 0 ? $floatValue : 0;
+        }
+
+        if (is_string($value)) {
+            $trimmed = trim($value);
+            if ($trimmed === '') {
+                return 0;
+            }
+
+            $trimmed = str_replace(',', '', $trimmed);
+
+            if (preg_match('/^([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z]{1,4})?$/', $trimmed, $matches)) {
+                $base = (float) $matches[1];
+                if ($base <= 0) {
+                    return 0;
+                }
+
+                $unit = isset($matches[2]) ? strtolower($matches[2]) : 'b';
+                $unitMap = [
+                    'b' => 1,
+                    'byte' => 1,
+                    'bytes' => 1,
+                    'k' => 1024,
+                    'kb' => 1024,
+                    'kib' => 1024,
+                    'm' => 1024 * 1024,
+                    'mb' => 1024 * 1024,
+                    'mib' => 1024 * 1024,
+                    'g' => 1024 * 1024 * 1024,
+                    'gb' => 1024 * 1024 * 1024,
+                    'gib' => 1024 * 1024 * 1024,
+                    't' => pow(1024, 4),
+                    'tb' => pow(1024, 4),
+                    'tib' => pow(1024, 4),
+                    'p' => pow(1024, 5),
+                    'pb' => pow(1024, 5),
+                    'pib' => pow(1024, 5),
+                ];
+
+                $multiplier = $unitMap[$unit] ?? null;
+                if ($multiplier !== null) {
+                    return $base * $multiplier;
+                }
+            }
+
+            if (is_numeric($trimmed)) {
+                $numeric = (float) $trimmed;
+                return $numeric > 0 ? $numeric : 0;
+            }
+        }
+
+        return 0;
+    }
+
+    private function resolveOriginSize(array $item, $currentSize)
+    {
+        if ($currentSize > 65536) {
+            return $currentSize;
+        }
+
+        $originUrl = $this->resolveOriginUrl($item);
+        if (!$originUrl) {
+            return $currentSize;
+        }
+
+        $size = $this->fetchRemoteFileSize($originUrl);
+        if ($size > 0) {
+            return $size;
+        }
+
+        return $currentSize;
+    }
+
+    private function resolveOriginUrl(array $item)
+    {
+        $candidates = [
+            $item['links']['origin'] ?? null,
+            $item['links']['original'] ?? null,
+            $item['links']['image'] ?? null,
+            $item['links']['url'] ?? null,
+            $item['origin_url'] ?? null,
+            $item['origin']['url'] ?? null,
+            $item['origin']['links']['url'] ?? null,
+            $item['origin']['links']['origin'] ?? null,
+            $item['origin']['links']['original'] ?? null,
+            $item['url'] ?? null,
+            $item['public_url'] ?? null,
+        ];
+
+        foreach ($candidates as $url) {
+            if (is_string($url) && $url !== '') {
+                return $url;
+            }
+        }
+
+        return null;
+    }
+
+    private function fetchRemoteFileSize($url)
+    {
+        if (!is_string($url) || $url === '') {
+            return 0;
+        }
+
+        if (isset($this->remoteSizeCache[$url])) {
+            return $this->remoteSizeCache[$url];
+        }
+
+        $ch = curl_init($url);
+        if (!$ch) {
+            return 0;
+        }
+
+        curl_setopt_array($ch, [
+            CURLOPT_NOBODY => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HEADER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 5,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+        ]);
+
+        $headers = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $length = curl_getinfo($ch, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
+        curl_close($ch);
+
+        if ($httpCode >= 400) {
+            $this->remoteSizeCache[$url] = 0;
+            return 0;
+        }
+
+        if ($length > 0) {
+            $this->remoteSizeCache[$url] = (int) $length;
+            return $this->remoteSizeCache[$url];
+        }
+
+        if (is_string($headers)) {
+            foreach (explode("\n", $headers) as $line) {
+                if (stripos($line, 'Content-Length:') === 0) {
+                    $value = trim(substr($line, 15));
+                    if (is_numeric($value)) {
+                        $this->remoteSizeCache[$url] = (int) $value;
+                        return $this->remoteSizeCache[$url];
+                    }
+                }
+            }
+        }
+
+        $this->remoteSizeCache[$url] = 0;
+        return 0;
+    }
+
+    private function resolveDirectoryFromItem(array $item, $fallbackUrl = null)
+    {
+        $candidates = [
+            $item['directory'] ?? null,
+            $item['dir'] ?? null,
+            $item['folder'] ?? null,
+            $item['path'] ?? null,
+            $item['pathname'] ?? null,
+            $item['relative_path'] ?? null,
+            $item['relativePath'] ?? null,
+            $item['storage_path'] ?? null,
+            $item['storagePath'] ?? null,
+            $item['key'] ?? null,
+        ];
+
+        foreach ($candidates as $value) {
+            $normalized = $this->normalizeDirectoryValue($value);
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        $urlCandidates = [
+            $fallbackUrl,
+            $item['public_url'] ?? null,
+            $item['links']['url'] ?? null,
+            $item['links']['origin'] ?? null,
+            $item['url'] ?? null,
+        ];
+
+        foreach ($urlCandidates as $url) {
+            $directory = $this->extractDirectoryFromUrl($url);
+            if ($directory !== '') {
+                return $directory;
+            }
+        }
+
+        return '';
+    }
+
+    private function extractDirectoryFromUrl($url)
+    {
+        if (!is_string($url) || $url === '') {
+            return '';
+        }
+
+        $path = parse_url($url, PHP_URL_PATH);
+        if (!is_string($path) || $path === '') {
+            $path = $url;
+        }
+
+        $path = str_replace('\\', '/', $path);
+        $path = preg_replace('/\/+/', '/', $path);
+        $trimmed = trim($path, '/');
+        if ($trimmed === '') {
+            return '';
+        }
+
+        $segments = explode('/', $trimmed);
+        if (count($segments) <= 1) {
+            return '';
+        }
+
+        array_pop($segments);
+        $directory = implode('/', $segments);
+        return $this->normalizeDirectoryValue($directory);
+    }
+
+    private function normalizeDirectoryValue($value)
+    {
+        if (!is_string($value)) {
+            return '';
+        }
+
+        $raw = trim($value);
+        if ($raw === '') {
+            return '';
+        }
+
+        if (preg_match('/^https?:\/\//i', $raw)) {
+            $path = parse_url($raw, PHP_URL_PATH);
+            if (is_string($path) && $path !== '') {
+                $raw = $path;
+            }
+        }
+
+        $raw = preg_replace('/[?#].*$/', '', $raw);
+        $raw = str_replace('\\', '/', $raw);
+        $raw = preg_replace('/\/+/', '/', $raw);
+        $raw = trim($raw, '/');
+
+        if ($raw === '') {
+            return '';
+        }
+
+        $segments = explode('/', $raw);
+        if (!empty($segments)) {
+            $last = end($segments);
+            if (strpos($last, '.') !== false) {
+                array_pop($segments);
+            }
+        }
+
+        if (empty($segments)) {
+            return '';
+        }
+
+        $uploadsIndex = array_search('uploads', $segments, true);
+        if ($uploadsIndex !== false && $uploadsIndex < count($segments) - 1) {
+            $segments = array_slice($segments, $uploadsIndex + 1);
+        }
+
+        return implode('/', $segments);
     }
 
     public function uploadFile($filePath, $fileName, $targetPath = '')
@@ -544,15 +913,13 @@ class LskyService
                         if (strpos($endpoint, '/v1/') !== false) {
                             // V1 API：根据官方文档添加所有可能有用的参数
                             $postData['permission'] = 1; // 1=公开，0=私有
-                            // 杜老师说7bu的兼容 等V1实现需要有效策略ID；动态解析
-                            $postData['strategy_id'] = $this->resolveStrategyIdV1();
+                            $postData['strategy_id'] = $this->resolveStorageId(true);
                             if (!empty($this->lskyConfig['albumId'])) {
                                 $postData['album_id'] = $this->lskyConfig['albumId'];
                             }
                         } elseif (strpos($endpoint, '/v2/') !== false) {
                             // V2 API：必需参数（storage_id 必填）
-                            $validStorageId = $this->getValidStorageId();
-                            $postData['storage_id'] = !empty($this->lskyConfig['strategyId']) ? intval($this->lskyConfig['strategyId']) : intval($validStorageId);
+                            $postData['storage_id'] = (int) $this->resolveStorageId();
                             if (!empty($this->lskyConfig['albumId'])) {
                                 $postData['album_id'] = intval($this->lskyConfig['albumId']);
                             }
@@ -649,25 +1016,25 @@ class LskyService
                                 // 完整参数组合
                                 [
                                     'file' => $curlFile,
-                                    'strategy_id' => $this->resolveStrategyIdV1(),
+                                    'strategy_id' => $this->resolveStorageId(true),
                                     'permission' => 1,
                                     'album_id' => 0
                                 ],
                                 // 最小参数组合
                                 [
                                     'file' => $curlFile,
-                                    'strategy_id' => $this->resolveStrategyIdV1()
+                                    'strategy_id' => $this->resolveStorageId(true)
                                 ],
                                 // 无相册ID
                                 [
                                     'file' => $curlFile,
-                                    'strategy_id' => $this->resolveStrategyIdV1(),
+                                    'strategy_id' => $this->resolveStorageId(true),
                                     'permission' => 1
                                 ],
                                 // 尝试字符串形式的permission
                                 [
                                     'file' => $curlFile,
-                                    'strategy_id' => $this->resolveStrategyIdV1(),
+                                    'strategy_id' => $this->resolveStorageId(true),
                                     'permission' => '1',
                                     'album_id' => '0'
                                 ]
@@ -733,7 +1100,7 @@ class LskyService
                         if (strpos($endpoint, '/v1/') !== false) {
                             // V1 API参数（根据官方文档）
                             // 确保始终包含strategy_id参数（新版本兰空图床可能需要）
-                            $postData['strategy_id'] = !empty($this->lskyConfig['strategyId']) ? $this->lskyConfig['strategyId'] : '1';
+                            $postData['strategy_id'] = (string) $this->resolveStorageId(true);
                             if (!empty($this->lskyConfig['albumId'])) {
                                 $postData['album_id'] = $this->lskyConfig['albumId'];
                             }
@@ -741,8 +1108,7 @@ class LskyService
                             $postData['permission'] = 1; // 1=公开，0=私有
                         } elseif (strpos($endpoint, '/v2/') !== false) {
                             // V2 API参数（根据官方文档，修复数据类型和存储策略ID）
-                            $validStorageId = $this->getValidStorageId();
-                            $postData['storage_id'] = !empty($this->lskyConfig['strategyId']) ? intval($this->lskyConfig['strategyId']) : intval($validStorageId);
+                            $postData['storage_id'] = (int) $this->resolveStorageId();
                             if (!empty($this->lskyConfig['albumId'])) {
                                 $postData['album_id'] = intval($this->lskyConfig['albumId']);
                             }

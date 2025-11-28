@@ -38,6 +38,130 @@
         return null;
     }
 
+    function formatFileSize(bytes) {
+        var value = Number(bytes);
+        if (!isFinite(value) || value <= 0) {
+            return '';
+        }
+
+        var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+        var index = 0;
+
+        while (value >= 1024 && index < units.length - 1) {
+            value = value / 1024;
+            index++;
+        }
+
+        if (index === 0) {
+            return Math.round(value) + ' ' + units[index];
+        }
+
+        var precision = value >= 100 ? 0 : (value >= 10 ? 1 : 2);
+        var formatted = value.toFixed(precision);
+        if (precision > 0) {
+            formatted = formatted.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '');
+        }
+
+        return formatted + ' ' + units[index];
+    }
+
+    function formatDirectoryLabel(directoryValue, sizeValue) {
+        var normalized = typeof directoryValue === 'string'
+            ? directoryValue.replace(/^\/+|\/+$/g, '')
+            : '';
+        var baseLabel = normalized ? '/' + normalized : '/';
+        var formattedSize = formatFileSize(sizeValue);
+        if (formattedSize) {
+            return baseLabel + ' · ' + formattedSize;
+        }
+        return baseLabel;
+    }
+
+    function parseSizeCandidate(value) {
+        if (value == null) {
+            return 0;
+        }
+
+        if (typeof value === 'number') {
+            return value > 0 && isFinite(value) ? value : 0;
+        }
+
+        if (typeof value === 'string') {
+            var cleaned = value.trim();
+            if (cleaned === '') {
+                return 0;
+            }
+
+            cleaned = cleaned.replace(/,/g, '');
+
+            if (/^\d+$/.test(cleaned)) {
+                var intVal = parseInt(cleaned, 10);
+                return isFinite(intVal) && intVal > 0 ? intVal : 0;
+            }
+
+            var match = cleaned.match(/^([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z]{1,4})?$/);
+            if (match) {
+                var base = parseFloat(match[1]);
+                if (!isFinite(base) || base <= 0) {
+                    return 0;
+                }
+
+                var unitKey = (match[2] || 'b').toLowerCase();
+                var unitMap = {
+                    b: 1,
+                    byte: 1,
+                    bytes: 1,
+                    k: 1024,
+                    kb: 1024,
+                    kib: 1024,
+                    m: 1024 * 1024,
+                    mb: 1024 * 1024,
+                    mib: 1024 * 1024,
+                    g: 1024 * 1024 * 1024,
+                    gb: 1024 * 1024 * 1024,
+                    gib: 1024 * 1024 * 1024,
+                    t: Math.pow(1024, 4),
+                    tb: Math.pow(1024, 4),
+                    tib: Math.pow(1024, 4),
+                    p: Math.pow(1024, 5),
+                    pb: Math.pow(1024, 5),
+                    pib: Math.pow(1024, 5)
+                };
+
+                var multiplier = unitMap[unitKey];
+                if (multiplier) {
+                    return base * multiplier;
+                }
+            }
+
+            var fallback = parseFloat(cleaned);
+            if (isFinite(fallback) && fallback > 0) {
+                return fallback;
+            }
+        }
+
+        return 0;
+    }
+
+    function resolveFileSize(meta) {
+        if (!meta || typeof meta !== 'object') {
+            return 0;
+        }
+
+        var keys = ['size', 'fileSize', 'filesize', 'sizeReadable', 'size_readable', 'sizeHuman', 'size_human'];
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            if (Object.prototype.hasOwnProperty.call(meta, key)) {
+                var parsed = parseSizeCandidate(meta[key]);
+                if (parsed > 0) {
+                    return parsed;
+                }
+            }
+        }
+
+        return 0;
+    }
+
     function toggleDeleteButtons(showDelete) {
         var buttons = document.querySelectorAll('[data-temf-copy]');
         buttons.forEach(function(btn) {
@@ -1050,6 +1174,9 @@
                         var copy = Object.assign({}, item);
                         copy.group = copy.group || (year + '-' + month);
                         copy.mtime = copy.mtime || 0;
+                        copy.directory = normalizeDirectoryPath(copy.directory || '');
+                        copy.thumbnail = copy.thumbnail || '';
+                        copy.id = copy.id || '';
                         return copy;
                     });
                 });
@@ -1064,7 +1191,11 @@
                     var month = parts[1].padStart(2, '0');
                     grouped[year] = grouped[year] || {};
                     grouped[year][month] = grouped[year][month] || [];
-                    grouped[year][month].push(Object.assign({}, item));
+                    var clone = Object.assign({}, item);
+                    clone.directory = normalizeDirectoryPath(clone.directory || '');
+                    clone.thumbnail = clone.thumbnail || '';
+                    clone.id = clone.id || '';
+                    grouped[year][month].push(clone);
                 });
             }
 
@@ -1399,17 +1530,21 @@
             
             // 添加切换动画和加载提示
             var body = document.querySelector('#temf-modal .temf-body');
+            var dialog = document.querySelector('#temf-modal .temf-dialog');
             if (body) {
                 body.classList.add('temf-content-switching');
-                // 移除已有遮罩
-                var existed = body.querySelector('.temf-switching-overlay');
-                if (existed && existed.parentNode) existed.parentNode.removeChild(existed);
-                // 叠加白色遮罩，不清空原有网格，避免闪烁
+            }
+            if (dialog) {
+                dialog.classList.add('temf-switching-active');
+                var existingOverlay = dialog.querySelector('.temf-switching-overlay');
+                if (existingOverlay && existingOverlay.parentNode) {
+                    existingOverlay.parentNode.removeChild(existingOverlay);
+                }
                 var overlay = document.createElement('div');
                 overlay.className = 'temf-switching-overlay';
                 overlay.innerHTML = '<div class="temf-switching-spinner"></div>' +
                     '<div class="temf-switching-text">正在切换到 ' + storageName + '...</div>';
-                body.appendChild(overlay);
+                dialog.appendChild(overlay);
             }
             
             // 更新按钮状态
@@ -1459,16 +1594,20 @@
         
         finishSwitchAnimation: function() {
             var body = document.querySelector('#temf-modal .temf-body');
+            var dialog = document.querySelector('#temf-modal .temf-dialog');
             if (body) {
                 body.classList.remove('temf-content-switching');
                 body.classList.add('temf-content-switched');
-                var overlay = body.querySelector('.temf-switching-overlay');
-                if (overlay && overlay.parentNode) {
-                    overlay.parentNode.removeChild(overlay);
-                }
                 setTimeout(function() {
                     body.classList.remove('temf-content-switched');
                 }, 200);
+            }
+            if (dialog) {
+                dialog.classList.remove('temf-switching-active');
+                var overlay = dialog.querySelector('.temf-switching-overlay');
+                if (overlay && overlay.parentNode) {
+                    overlay.parentNode.removeChild(overlay);
+                }
             }
         },
         
@@ -1622,7 +1761,10 @@
                     url: file.url,
                     name: file.name,
                     mtime: file.mtime || 0,
-                    size: file.size || 0
+                    size: file.size || 0,
+                    directory: normalizeDirectoryPath(file.directory || ''),
+                    thumbnail: file.thumbnail || '',
+                    id: file.id || ''
                 });
                 
                 // 记录最新的文件时间
@@ -2057,13 +2199,28 @@
             var directoryValue = typeof result.directory === 'string'
                 ? result.directory
                 : (item.getAttribute('data-directory') || '');
-            var normalizedDir = directoryValue ? directoryValue.replace(/^\/+|\/+$/g, '') : '';
-            var displayDirectory = normalizedDir ? '/' + normalizedDir : '/';
+            var normalizedDir = directoryValue ? directoryValue.replace(/^\/+/, '').replace(/\/+$/g, '') : '';
             var directorySpan = item.querySelector('.temf-directory');
+            var existingSizeAttr = item.getAttribute('data-size') || (directorySpan ? directorySpan.getAttribute('data-size') : '');
+            var sizeValue = existingSizeAttr ? Number(existingSizeAttr) : 0;
+            if (!isFinite(sizeValue) || sizeValue <= 0) {
+                sizeValue = 0;
+            }
+            var displayDirectory = formatDirectoryLabel(normalizedDir, sizeValue);
             if (directorySpan) {
                 directorySpan.textContent = displayDirectory;
                 directorySpan.setAttribute('title', displayDirectory);
                 directorySpan.setAttribute('data-directory', normalizedDir);
+                if (existingSizeAttr) {
+                    directorySpan.setAttribute('data-size', existingSizeAttr);
+                } else {
+                    directorySpan.removeAttribute('data-size');
+                }
+            }
+            if (existingSizeAttr) {
+                item.setAttribute('data-size', existingSizeAttr);
+            } else {
+                item.removeAttribute('data-size');
             }
 
             var files = state.pagination.allFiles || [];
@@ -2073,6 +2230,7 @@
                     url: newUrl,
                     name: newName,
                     thumbnail: result.thumbnail || files[index].thumbnail,
+                    size: files[index].size,
                     directory: normalizedDir,
                     id: result.id != null ? result.id : files[index].id
                 });
@@ -2103,7 +2261,7 @@
                 var meta = state.selectedMeta.get(oldUrl) || {};
                 if (result.id != null) {
                     meta.id = result.id;
-                } else if (active.objectId && !meta.id) {
+                } else if (active.objectId) {
                     meta.id = active.objectId;
                 }
                 state.selected.delete(oldUrl);
@@ -2129,6 +2287,15 @@
             }
 
             var list = Array.isArray(files) ? files : [];
+            list = list.map(function(file) {
+                if (file && typeof file === 'object') {
+                    var resolvedSize = resolveFileSize(file);
+                    if (resolvedSize > 0) {
+                        file.size = resolvedSize;
+                    }
+                }
+                return file;
+            });
             var seenKeys = new Set();
             var uniqueFiles = [];
 
@@ -2253,23 +2420,26 @@
             var safeUrl = escapeHtml(url);
             var safeThumbnail = escapeHtml(thumbnail);
             var safeNameFull = escapeHtml(name);
-            var normalizedDirectory = directory ? directory.replace(/^\/+|\/+$/g, '') : '';
+            var normalizedDirectory = directory ? directory.replace(/^\/+/g, '').replace(/\/+$/g, '') : '';
             var safeDirectoryValue = escapeHtml(normalizedDirectory);
             var displayName = safeNameFull;
             var lastDot = name.lastIndexOf('.');
             if (lastDot > 0) {
                 displayName = escapeHtml(name.slice(0, lastDot));
             }
-            
-            var directoryDisplay = normalizedDirectory ? '/' + normalizedDirectory : '/';
+
+            var sizeValue = resolveFileSize(item);
+            var sizeAttr = sizeValue > 0 ? String(sizeValue) : '';
+            var directoryDisplay = formatDirectoryLabel(normalizedDirectory, sizeValue);
             var safeDirectoryDisplay = escapeHtml(directoryDisplay);
+            var safeSizeAttr = escapeHtml(sizeAttr);
 
             // 获取 loading.gif 路径
             var loadingGif = this.getLoadingGifUrl();
             var safeLoader = escapeHtml(loadingGif);
             
             // 优化图片加载：使用loading.gif作为占位图，通过Intersection Observer进行懒加载
-            return '<li class="temf-item" data-url="' + safeUrl + '" data-directory="' + safeDirectoryValue + '">' +
+            return '<li class="temf-item" data-url="' + safeUrl + '" data-directory="' + safeDirectoryValue + '" data-size="' + safeSizeAttr + '">' +
                 '<div class="temf-thumb">' +
                 '<input type="checkbox" class="temf-pick" value="' + safeUrl + '" data-meta-id="' + (item.id != null ? String(item.id).replace(/"/g, '&quot;') : '') + '">' +
                 '<img src="' + safeLoader + '" data-src="' + safeThumbnail + '" alt="' + safeNameFull + '" ' +
@@ -2279,7 +2449,7 @@
                 '</div>' +
                 '<div class="temf-meta">' +
                 '<span class="temf-name" data-full-name="' + safeNameFull + '" title="' + displayName + '">' + displayName + '</span>' +
-                '<span class="temf-directory" data-directory="' + safeDirectoryValue + '" title="' + safeDirectoryDisplay + '">' + safeDirectoryDisplay + '</span>' +
+                '<span class="temf-directory" data-directory="' + safeDirectoryValue + '" data-size="' + safeSizeAttr + '" title="' + safeDirectoryDisplay + '">' + safeDirectoryDisplay + '</span>' +
                 '<div class="temf-actions">' +
                 '<button type="button" class="btn btn-xs temf-action-btn" data-temf-insert data-url="' + safeUrl + '">插入</button>' +
                 '<button type="button" class="btn btn-xs temf-action-btn" data-temf-copy data-url="' + safeUrl + '">复制</button>' +
@@ -2569,7 +2739,9 @@
         queue: [],
         currentIndex: 0,
         totalFiles: 0,
-        
+        currentXhr: null,
+        isCancelled: false,
+
         handleFile: function(file) {
             if (!this.validateMultiModeState()) {
                 // invalid multi-mode
@@ -2617,6 +2789,8 @@
             this.queue = files;
             this.currentIndex = 0;
             this.totalFiles = files.length;
+            this.isCancelled = false;
+            this.currentXhr = null;
 
             if (!this.totalFiles) {
                 return;
@@ -2627,11 +2801,40 @@
 
             progress.show(firstName, this.totalFiles);
             progress.update(0, this.totalFiles, firstName);
+            progress.setCancelHandler(this.cancel.bind(this));
 
             this.uploadNext();
         },
+
+        cancel: function() {
+            var xhr = this.currentXhr;
+            if (xhr) {
+                try {
+                    xhr.abort();
+                } catch (e) {
+                    console.warn('[TEMF] 取消上传失败', e);
+                }
+            }
+            this.isCancelled = true;
+            this.queue = [];
+            this.currentXhr = null;
+            progress.setStatusMessage('上传已取消', { variant: 'warning' });
+            progress.setCancelHandler(null);
+            setTimeout(function() {
+                progress.hide();
+            }, 500);
+        },
+
+        finishAfterCancel: function() {
+            progress.hide();
+        },
         
         uploadNext: function() {
+            if (this.isCancelled) {
+                this.finishAfterCancel();
+                return;
+            }
+
             if (this.currentIndex >= this.queue.length) {
                 progress.finish();
                 return;
@@ -2726,10 +2929,11 @@
         },
         
         onUploadComplete: function(success, fileName) {
+            this.currentXhr = null;
             this.currentIndex++;
             
             if (success) {
-            } else {
+                state.uploadErrors = 0;
             }
             
             var self = this;
@@ -2853,21 +3057,20 @@
         handleUploadError: function(msg, file, isBatch) {
             console.error('[Upload Error]', msg, file.name);
             
-            // 显示错误信息
-            if (!isBatch) {
-                alert('上传失败: ' + msg);
+            var message = msg || '未知错误';
+
+            if (progress.setError) {
+                progress.setError(message);
             }
-            
-            if (progress.setError) progress.setError(msg);
-            
+
             if (!isBatch) {
-                // 单文件上传时，短暂展示错误后隐藏
+                try {
+                    alert('上传失败: ' + message);
+                } catch (e) {}
                 setTimeout(function() {
                     progress.hide();
                 }, 2000);
-            }
-            
-            if (isBatch) {
+            } else {
                 this.onUploadComplete(false, file.name);
             }
         },
@@ -3256,6 +3459,8 @@
         statusEl: null,
         barEl: null,
         cardEl: null,
+        closeBtn: null,
+        cancelHandler: null,
         currentFileIndex: 0,
         totalFiles: 0,
 
@@ -3267,11 +3472,15 @@
                 if (!this.overlay.isConnected) {
                     dialog.appendChild(this.overlay);
                 }
+
                 if (!this.titleEl || !this.statusEl || !this.barEl) {
                     this.titleEl = this.overlay.querySelector('.temf-progress-title');
                     this.statusEl = this.overlay.querySelector('.temf-progress-status');
                     this.barEl = this.overlay.querySelector('.temf-progress-bar');
                     this.cardEl = this.overlay.querySelector('.temf-progress-card');
+                    this.closeBtn = this.overlay.querySelector('.temf-progress-close');
+                    this.bindClose();
+                    this.updateCancelButton();
                 }
                 return;
             }
@@ -3280,6 +3489,7 @@
             overlay.className = 'temf-progress-overlay';
             overlay.innerHTML = '' +
                 '<div class="temf-progress-card">' +
+                    '<button type="button" class="temf-progress-close" aria-label="取消上传">×</button>' +
                     '<div class="temf-progress-title">上传文件</div>' +
                     '<div class="temf-progress-bar-track"><div class="temf-progress-bar"></div></div>' +
                     '<div class="temf-progress-status">上传中... 0% (0/0)</div>' +
@@ -3292,6 +3502,64 @@
             this.statusEl = overlay.querySelector('.temf-progress-status');
             this.barEl = overlay.querySelector('.temf-progress-bar');
             this.cardEl = overlay.querySelector('.temf-progress-card');
+            this.closeBtn = overlay.querySelector('.temf-progress-close');
+            this.bindClose();
+            this.updateCancelButton();
+        },
+
+        bindClose: function() {
+            var self = this;
+            if (this.closeBtn) {
+                this.closeBtn.addEventListener('click', function(ev) {
+                    ev.preventDefault();
+                    if (typeof self.cancelHandler === 'function') {
+                        self.cancelHandler();
+                    }
+                });
+            }
+        },
+
+        setCancelHandler: function(handler) {
+            this.cancelHandler = typeof handler === 'function' ? handler : null;
+            this.updateCancelButton();
+        },
+
+        updateCancelButton: function() {
+            if (!this.closeBtn) {
+                return;
+            }
+            if (this.cancelHandler) {
+                this.closeBtn.style.display = '';
+                this.closeBtn.disabled = false;
+            } else {
+                this.closeBtn.style.display = 'none';
+                this.closeBtn.disabled = true;
+            }
+        },
+
+        setStatusMessage: function(message, options) {
+            this.ensureCreated();
+            if (!this.overlay || !this.statusEl) return;
+
+            var opts = options || {};
+            var variant = opts.variant || 'info';
+
+            this.statusEl.textContent = message || '';
+
+            this.statusEl.classList.remove('error', 'success', 'warning');
+            if (variant === 'error') {
+                this.statusEl.classList.add('error');
+                this.overlay.classList.add('temf-progress-error');
+                if (this.cardEl) this.cardEl.classList.add('temf-progress-error');
+            } else {
+                if (variant === 'success') {
+                    this.statusEl.classList.add('success');
+                } else if (variant === 'warning') {
+                    this.statusEl.classList.add('warning');
+                }
+                this.overlay.classList.remove('temf-progress-error');
+                if (this.cardEl) this.cardEl.classList.remove('temf-progress-error');
+            }
         },
 
         show: function(initialTitle, totalFiles) {
@@ -3303,6 +3571,7 @@
             if (this.cardEl) {
                 this.cardEl.classList.remove('temf-progress-error');
             }
+            this.setCancelHandler(null);
 
             var titleText = initialTitle || '上传文件';
             if (this.titleEl) {
@@ -3312,12 +3581,9 @@
             if (this.barEl) {
                 this.barEl.style.width = '0%';
             }
-            if (this.statusEl) {
-                var total = Number.isFinite(totalFiles) && totalFiles > 0 ? Math.max(0, totalFiles) : 0;
-                var suffix = total ? ' (0/' + total + ')' : '';
-                this.statusEl.textContent = '上传中... 0%' + suffix;
-                this.statusEl.classList.remove('error');
-            }
+            var total = Number.isFinite(totalFiles) && totalFiles > 0 ? Math.max(0, totalFiles) : 0;
+            var suffix = total ? ' (0/' + total + ')' : '';
+            this.setStatusMessage('上传中... 0%' + suffix, { variant: 'info' });
             this.currentFileIndex = 0;
             this.totalFiles = Number.isFinite(totalFiles) && totalFiles > 0 ? totalFiles : 0;
         },
@@ -3327,10 +3593,13 @@
                 this.overlay.style.display = 'none';
                 if (this.statusEl) {
                     this.statusEl.classList.remove('error');
+                    this.statusEl.classList.remove('success');
+                    this.statusEl.classList.remove('warning');
                 }
                 if (this.cardEl) {
                     this.cardEl.classList.remove('temf-progress-error');
                 }
+                this.setCancelHandler(null);
             }
         },
 
@@ -3345,7 +3614,6 @@
             if (typeof total === 'number' && total >= 0) {
                 this.totalFiles = total;
             }
-
             if (typeof current === 'number') {
                 if (this.totalFiles > 0) {
                     this.currentFileIndex = Math.min(current + 1, this.totalFiles);
@@ -3367,27 +3635,16 @@
                 this.barEl.style.width = percent + '%';
             }
 
-            if (this.statusEl) {
-                var displayTotal = this.totalFiles || 0;
-                var displayCurrent = displayTotal ? Math.min(Math.max(this.currentFileIndex, 1), displayTotal) : 0;
-                var suffix = displayTotal ? ' (' + displayCurrent + '/' + displayTotal + ')' : '';
-                this.statusEl.textContent = '上传中... ' + Math.round(percent) + '%' + suffix;
-                this.statusEl.classList.remove('error');
-            }
+            var displayTotal = this.totalFiles || 0;
+            var displayCurrent = displayTotal ? Math.min(Math.max(this.currentFileIndex, 1), displayTotal) : 0;
+            var suffix = displayTotal ? ' (' + displayCurrent + '/' + displayTotal + ')' : '';
+            this.setStatusMessage('上传中... ' + Math.round(percent) + '%' + suffix, { variant: 'info' });
         },
 
         setError: function(msg) {
-            if (!this.overlay) return;
-
-            var card = this.overlay.querySelector('.temf-progress-card');
-            if (card) {
-                card.classList.add('temf-progress-error');
-            }
-
-            if (this.statusEl) {
-                this.statusEl.textContent = '上传失败: ' + msg;
-                this.statusEl.classList.add('error');
-            }
+            var message = msg || '上传失败';
+            this.setStatusMessage(message, { variant: 'error' });
+            this.setCancelHandler(this.hide.bind(this));
         },
 
         finish: function() {
@@ -3406,14 +3663,10 @@
             if (this.statusEl && !isError) {
                 var total = this.totalFiles || 0;
                 var suffix = total ? ' (' + total + '/' + total + ')' : '';
-                this.statusEl.textContent = '上传完成 100%' + suffix;
-                this.statusEl.classList.remove('error');
+                this.setStatusMessage('上传完成 100%' + suffix, { variant: 'success' });
             }
 
-            var self = this;
-            setTimeout(function() {
-                self.hide();
-            }, 800);
+            this.setCancelHandler(this.hide.bind(this));
         }
     };
     

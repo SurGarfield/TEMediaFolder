@@ -445,10 +445,14 @@ class CosService extends BaseService
                 
                 $publicUrl = $this->getPublicUrl($key);
                 $lastModified = isset($content->LastModified) ? strtotime((string)$content->LastModified) : 0;
+                $size = isset($content->Size) ? (int) $content->Size : 0;
+
                 $fileData = [
                     'name' => $name,
                     'url' => $publicUrl,
                     'mtime' => $lastModified,
+                    'size' => $size,
+                    'directory' => $this->extractDirectoryFromKey($key),
                     'id' => $key
                 ];
                 
@@ -480,6 +484,35 @@ class CosService extends BaseService
 
         $key = ltrim($path, '/');
         return rawurldecode($key);
+    }
+
+    private function extractDirectoryFromKey($key)
+    {
+        if (!is_string($key) || $key === '') {
+            return '';
+        }
+
+        $normalized = trim($key, '/');
+        if ($normalized === '') {
+            return '';
+        }
+
+        $segments = explode('/', $normalized);
+        if (count($segments) <= 1) {
+            return '';
+        }
+
+        array_pop($segments);
+        if (empty($segments)) {
+            return '';
+        }
+
+        $uploadsIndex = array_search('uploads', $segments, true);
+        if ($uploadsIndex !== false && $uploadsIndex < count($segments) - 1) {
+            $segments = array_slice($segments, $uploadsIndex + 1);
+        }
+
+        return implode('/', $segments);
     }
     
     /**
