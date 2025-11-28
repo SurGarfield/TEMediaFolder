@@ -4,6 +4,8 @@
 2. 在后台插件管理页面启用插件
 3. 根据需要配置存储方式（本地/COS/OSS/兰空图床/又拍云）
 
+!()[https://github.com/SurGarfield/TEMediaFolder/blob/main/assets/ScreenShot.png]
+
 开发环境/建议环境
 + Typecho1.3.0/Typecho: >= 1.2.1
 + PHP:8.2/PHP: >= 7.2
