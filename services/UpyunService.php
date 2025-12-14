@@ -324,6 +324,7 @@ class UpyunService extends BaseService
                     'thumbnail' => $this->getThumbnailUrl($publicUrl),
                     'size' => $size,
                     'mtime' => $mtime,
+                    'directory' => $this->extractDirectoryFromPath(trim($path . '/' . $name, '/')),
                     'id' => trim($path . '/' . $name, '/')
                 ];
             }
@@ -351,6 +352,30 @@ class UpyunService extends BaseService
         }
 
         return trim($path, '/');
+    }
+
+    private function extractDirectoryFromPath($path)
+    {
+        if (!is_string($path) || $path === '') {
+            return '';
+        }
+
+        $normalized = trim(str_replace('\\', '/', $path), '/');
+        if ($normalized === '') {
+            return '';
+        }
+
+        $segments = explode('/', $normalized);
+        if (count($segments) <= 1) {
+            return '';
+        }
+
+        array_pop($segments);
+        if (empty($segments)) {
+            return '';
+        }
+
+        return implode('/', $segments);
     }
 
     private function makeRequest($url, $method = 'GET', $headers = [], $body = null)

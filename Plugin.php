@@ -4,7 +4,7 @@
  * 媒体预览（支持本地、腾讯COS、阿里云OSS、又拍云和兰空图床）
  * @package TEMediaFolder
  * @author 森木志
- * @version 3.0.2
+ * @version 3.1.0
  * @link https://github.com/SurGarfield/TEMediaFolder
  */
 

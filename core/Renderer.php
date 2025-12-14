@@ -323,7 +323,11 @@ class Renderer
         echo '.temf-pagination .btn:disabled{opacity:0.5;cursor:not-allowed}';
 
         echo '.temf-progress-overlay{position:absolute;inset:0;background:rgba(18,18,18,0.55);backdrop-filter:saturate(160%) blur(1.5px);display:none;align-items:center;justify-content:center;z-index:20;}';
-        echo '.temf-progress-card{background:#fff;border-radius:10px;padding:24px 32px;box-shadow:0 18px 48px rgba(0,0,0,0.22);width:min(340px,85%);display:flex;flex-direction:column;gap:18px;text-align:center;}';
+        echo '.temf-progress-card{background:#fff;border-radius:10px;padding:28px 32px 24px;box-shadow:0 18px 48px rgba(0,0,0,0.22);width:min(360px,90%);display:flex;flex-direction:column;gap:18px;text-align:center;position:relative;}';
+        echo '.temf-progress-close{position:absolute;top:12px;right:12px;width:28px;height:28px;border:none;background:rgba(0,0,0,0.04);color:#1f1f1f;font-size:16px;line-height:1;border-radius:999px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all 0.2s;}';
+        echo '.temf-progress-close:hover{background:rgba(0,0,0,0.12);color:#000;}';
+        echo '.temf-progress-close:active{background:rgba(0,0,0,0.2);}';
+        echo '.temf-progress-close:disabled{opacity:0.5;cursor:not-allowed;}';
         echo '.temf-progress-title{font-size:15px;font-weight:600;color:#1f1f1f;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}';
         echo '.temf-progress-bar-track{height:8px;background:rgba(0,0,0,0.08);border-radius:999px;overflow:hidden;position:relative;}';
         echo '.temf-progress-bar{height:100%;width:0%;background:#1f1f1f;border-radius:inherit;transition:width 0.3s ease;}';
@@ -397,8 +401,18 @@ class Renderer
                 if (!isset($dataMap[$year])) {
                     $dataMap[$year] = [];
                 }
-                $dataMap[$year][$month] = array_map(function($item) {
+                $dataMap[$year][$month] = array_map(function($item) use ($year, $month) {
                     $directory = isset($item['directory']) ? trim(str_replace('\\', '/', $item['directory']), '/') : '';
+                    
+                    // 标准化目录格式：将 2023/1 转换为 2023/01
+                    if ($directory) {
+                        $parts = explode('/', $directory);
+                        if (count($parts) >= 2 && preg_match('/^\d{4}$/', $parts[0]) && preg_match('/^\d{1,2}$/', $parts[1])) {
+                            $parts[1] = str_pad($parts[1], 2, '0', STR_PAD_LEFT);
+                            $directory = implode('/', $parts);
+                        }
+                    }
+                    
                     return [
                         'url' => $item['url'],
                         'name' => $item['name'],

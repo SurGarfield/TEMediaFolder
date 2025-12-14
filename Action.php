@@ -325,8 +325,12 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
                 return;
             }
 
+            // 清除缓存以确保获取最新数据
+            $service->clearCache();
+            
             $files = [];
             $groups = $service->getFileGroups();
+            
             foreach ($groups as $ym => $items) {
                 foreach ($items as $item) {
                     if (!isset($item['group'])) {
@@ -373,6 +377,33 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
             $this->sendJsonResponse($result);
         } catch (\Exception $e) {
             $this->sendJsonResponse(['ok' => false, 'msg' => '重命名失败: ' . $e->getMessage()]);
+        }
+    }
+
+    private function handleLocalUploadAction()
+    {
+        try {
+            if (!isset($_FILES['file']) || !is_uploaded_file($_FILES['file']['tmp_name'])) {
+                $this->sendJsonResponse(['ok' => false, 'msg' => 'No file uploaded']);
+                return;
+            }
+            
+            $filePath = $_FILES['file']['tmp_name'];
+            $fileName = basename($_FILES['file']['name']);
+            $targetPath = $this->request->get('temf_path', '');
+            
+            // 获取前端传递的年月参数
+            $targetYear = $this->request->get('temf_year', '');
+            $targetMonth = $this->request->get('temf_month', '');
+            
+            // 使用LocalFileService的uploadFile方法，包含图片压缩功能
+            $localService = new \TypechoPlugin\TEMediaFolder\Services\LocalFileService($this->config);
+            $result = $localService->uploadFile($filePath, $fileName, $targetPath, $targetYear, $targetMonth);
+            
+            $this->sendJsonResponse($result);
+            
+        } catch (\Exception $e) {
+            $this->sendJsonResponse(['ok' => false, 'msg' => 'Upload failed: ' . $e->getMessage()]);
         }
     }
 
@@ -450,28 +481,6 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
         }
     }
 
-    private function handleLocalUploadAction()
-    {
-        try {
-            if (!isset($_FILES['file']) || !is_uploaded_file($_FILES['file']['tmp_name'])) {
-                $this->sendJsonResponse(['ok' => false, 'msg' => 'No file uploaded']);
-                return;
-            }
-            
-            $filePath = $_FILES['file']['tmp_name'];
-            $fileName = basename($_FILES['file']['name']);
-            $targetPath = $this->request->get('temf_path', '');
-            
-            // 使用LocalFileService的uploadFile方法，包含图片压缩功能
-            $localService = new \TypechoPlugin\TEMediaFolder\Services\LocalFileService($this->config);
-            $result = $localService->uploadFile($filePath, $fileName, $targetPath);
-            
-            $this->sendJsonResponse($result);
-            
-        } catch (\Exception $e) {
-            $this->sendJsonResponse(['ok' => false, 'msg' => 'Upload failed: ' . $e->getMessage()]);
-        }
-    }
     
     private function handleLskyListAction()
     {
