@@ -44,40 +44,41 @@ class LocalFileService extends BaseService
             \RecursiveIteratorIterator::LEAVES_ONLY
         );
 
+
         foreach ($iterator as $fileInfo) {
             if (!$fileInfo->isFile()) {
                 continue;
             }
 
             $ext = strtolower($fileInfo->getExtension());
-            // 性能优化：使用哈希表查找而不是in_array
             if (!isset($allowedExtensions[$ext])) {
                 continue;
-            }
-
-            $mtime = $fileInfo->getMTime();
-            $ym = date('Y-m', $mtime);
-            
-            // 性能优化：如果该月份已达到限制，跳过旧文件
-            if ($maxPerMonth > 0 && isset($groups[$ym]) && count($groups[$ym]) >= $maxPerMonth) {
-                // 检查是否比现有最旧的文件更新
-                $oldestInMonth = end($groups[$ym])['mtime'];
-                if ($mtime <= $oldestInMonth) {
-                    continue;
-                }
-                // 移除最旧的文件为新文件腾出空间
-                array_pop($groups[$ym]);
             }
 
             $fullPath = $fileInfo->getPathname();
             $relative = str_replace(DIRECTORY_SEPARATOR, '/', substr($fullPath, strlen($uploadDir) + 1));
             $segments = explode('/', $relative);
-            if (count($segments) >= 3) {
+            
+            $ym = null;
+            if (count($segments) >= 2) {
                 $yearSegment = $segments[0];
                 $monthSegment = $segments[1];
-                if (preg_match('/^\d{4}$/', $yearSegment) && preg_match('/^\d{1,2}$/', $monthSegment)) {
+                if (preg_match('/^\d{4}$/', $yearSegment) && preg_match('/^(0?[1-9]|1[0-2])$/', $monthSegment)) {
                     $ym = sprintf('%s-%02d', $yearSegment, (int)$monthSegment);
                 }
+            }
+            
+            $mtime = $fileInfo->getMTime();
+            if ($ym === null) {
+                $ym = date('Y-m', $mtime);
+            }
+            
+            if ($maxPerMonth > 0 && isset($groups[$ym]) && count($groups[$ym]) >= $maxPerMonth) {
+                $oldestInMonth = end($groups[$ym])['mtime'];
+                if ($mtime <= $oldestInMonth) {
+                    continue;
+                }
+                array_pop($groups[$ym]);
             }
 
             $url = $uploadUrl . $relative;
@@ -191,15 +192,20 @@ class LocalFileService extends BaseService
     }
 
     
-    public function uploadFile($filePath, $fileName, $targetPath = '')
+    public function uploadFile($filePath, $fileName, $targetPath = '', $targetYear = '', $targetMonth = '')
     {
         try {
-            // 使用父类方法验证文件
+            // 增强安全验证（MIME类型、图片内容、文件名清理）
             $validation = $this->validateUploadFile($filePath, $fileName);
             if (!$validation['valid']) {
                 return $this->buildUploadResult(false, '', '', ['msg' => $validation['error']]);
             }
-
+            
+            // 使用清理后的文件名
+            if (isset($validation['sanitizedFileName'])) {
+                $fileName = $validation['sanitizedFileName'];
+            }
+            
             // 使用父类方法处理图片压缩
             $compressionResult = $this->processImageCompression($filePath, $fileName);
             $processedFilePath = $compressionResult['path'];
@@ -212,11 +218,21 @@ class LocalFileService extends BaseService
                 return $this->buildUploadResult(false, '', '', ['msg' => 'File too large']);
             }
             
-            // 准备目标目录
+            // 计算上传目录（支持指定年月）
+            $currentDate = '';
+            if ($targetYear && $targetMonth) {
+                // 使用指定的年月
+                $currentDate = $targetYear . DIRECTORY_SEPARATOR . str_pad($targetMonth, 2, '0', STR_PAD_LEFT);
+            } else {
+                // 使用当前年月
+                $currentDate = date('Y') . DIRECTORY_SEPARATOR . date('m');
+            }
+            
+            // 确定目标目录
             $uploadDir = $this->config->getUploadDir();
-            $currentDate = date('Y/m');
             $targetDir = $uploadDir . DIRECTORY_SEPARATOR . $currentDate;
             
+            // 确保目录存在
             if (!is_dir($targetDir)) {
                 if (!mkdir($targetDir, 0755, true)) {
                     return ['ok' => false, 'msg' => 'Failed to create upload directory'];
@@ -269,13 +285,20 @@ class LocalFileService extends BaseService
             $this->cleanupTempFile($processedFilePath);
             
             // 构建返回结果
-            $options = ['size' => $fileSize];
+           $options = ['size' => $fileSize];
             if ($thumbnailUrl) {
                 $options['thumbnail'] = $thumbnailUrl;
             }
             if ($isCompressed) {
                 $options['compressed'] = true;
                 $options['compression_info'] = $compressionResult;
+           }
+            
+            // 添加年月信息供前端使用
+            $pathParts = explode(DIRECTORY_SEPARATOR, $currentDate);
+            if (count($pathParts) >= 2) {
+                $options['year'] = $pathParts[0];
+                $options['month'] = $pathParts[1];
             }
             
             return $this->buildUploadResult(true, $fileUrl, $finalFileName, $options);
@@ -482,16 +505,6 @@ class LocalFileService extends BaseService
         }
     }
 
-
-    private function sanitizeFilename($name)
-    {
-        $disallowed = ["\\", "/", ":", "*", "?", '"', "<", ">", "|"];
-        $name = str_replace($disallowed, '', $name);
-        $name = trim($name);
-        $name = preg_replace('/\s+/u', ' ', $name);
-        return $name;
-    }
-
     private function resolveDirectoryPath($baseDir, $normalizedPath)
     {
         $baseReal = realpath($baseDir);
@@ -614,7 +627,7 @@ class LocalFileService extends BaseService
                     if (count($dirParts) >= 2) {
                         $possibleYear = $dirParts[count($dirParts) - 2];
                         $possibleMonth = $dirParts[count($dirParts) - 1];
-                        if (preg_match('/^\d{4}$/', $possibleYear) && preg_match('/^\d{1,2}$/', $possibleMonth)) {
+                        if (preg_match('/^\d{4}$/', $possibleYear) && preg_match('/^(0?[1-9]|1[0-2])$/', $possibleMonth)) {
                             $yearFromPath = $possibleYear;
                             $monthFromPath = (int)$possibleMonth;
                         }

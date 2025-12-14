@@ -2,24 +2,24 @@
  * TEMediaFolder JavaScript
  * 媒体文件夹插件前端交互
  */
-(function() {
+(function () {
     'use strict';
-    
+
     // 防止与其他插件冲突的兼容性检查
     if (typeof window.TEMediaFolder !== 'undefined') {
         // already initialized
         return;
     }
-    
+
     // 标记插件已初始化
     window.TEMediaFolder = { initialized: true };
-    
+
     // 检查必要的全局配置
     if (typeof TEMF_CONF === 'undefined') {
         // missing config
         return;
     }
-    
+
     function byId(id) {
         try {
             return document.getElementById(id);
@@ -38,9 +38,133 @@
         return null;
     }
 
+    function formatFileSize(bytes) {
+        var value = Number(bytes);
+        if (!isFinite(value) || value <= 0) {
+            return '';
+        }
+
+        var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+        var index = 0;
+
+        while (value >= 1024 && index < units.length - 1) {
+            value = value / 1024;
+            index++;
+        }
+
+        if (index === 0) {
+            return Math.round(value) + ' ' + units[index];
+        }
+
+        var precision = value >= 100 ? 0 : (value >= 10 ? 1 : 2);
+        var formatted = value.toFixed(precision);
+        if (precision > 0) {
+            formatted = formatted.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '');
+        }
+
+        return formatted + ' ' + units[index];
+    }
+
+    function formatDirectoryLabel(directoryValue, sizeValue) {
+        var normalized = typeof directoryValue === 'string'
+            ? directoryValue.replace(/^\/+|\/+$/g, '')
+            : '';
+        var baseLabel = normalized ? '/' + normalized : '/';
+        var formattedSize = formatFileSize(sizeValue);
+        if (formattedSize) {
+            return baseLabel + ' · ' + formattedSize;
+        }
+        return baseLabel;
+    }
+
+    function parseSizeCandidate(value) {
+        if (value == null) {
+            return 0;
+        }
+
+        if (typeof value === 'number') {
+            return value > 0 && isFinite(value) ? value : 0;
+        }
+
+        if (typeof value === 'string') {
+            var cleaned = value.trim();
+            if (cleaned === '') {
+                return 0;
+            }
+
+            cleaned = cleaned.replace(/,/g, '');
+
+            if (/^\d+$/.test(cleaned)) {
+                var intVal = parseInt(cleaned, 10);
+                return isFinite(intVal) && intVal > 0 ? intVal : 0;
+            }
+
+            var match = cleaned.match(/^([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z]{1,4})?$/);
+            if (match) {
+                var base = parseFloat(match[1]);
+                if (!isFinite(base) || base <= 0) {
+                    return 0;
+                }
+
+                var unitKey = (match[2] || 'b').toLowerCase();
+                var unitMap = {
+                    b: 1,
+                    byte: 1,
+                    bytes: 1,
+                    k: 1024,
+                    kb: 1024,
+                    kib: 1024,
+                    m: 1024 * 1024,
+                    mb: 1024 * 1024,
+                    mib: 1024 * 1024,
+                    g: 1024 * 1024 * 1024,
+                    gb: 1024 * 1024 * 1024,
+                    gib: 1024 * 1024 * 1024,
+                    t: Math.pow(1024, 4),
+                    tb: Math.pow(1024, 4),
+                    tib: Math.pow(1024, 4),
+                    p: Math.pow(1024, 5),
+                    pb: Math.pow(1024, 5),
+                    pib: Math.pow(1024, 5)
+                };
+
+                var multiplier = unitMap[unitKey];
+                if (multiplier) {
+                    return base * multiplier;
+                }
+            }
+
+            var fallback = parseFloat(cleaned);
+            if (isFinite(fallback) && fallback > 0) {
+                return fallback;
+            }
+        }
+
+        return 0;
+    }
+
+    function resolveFileSize(meta) {
+        if (!meta || typeof meta !== 'object') {
+            return 0;
+        }
+
+        var keys = ['size', 'fileSize', 'filesize', 'sizeReadable', 'size_readable', 'sizeHuman', 'size_human'];
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            if (Object.prototype.hasOwnProperty.call(meta, key)) {
+                var parsed = parseSizeCandidate(meta[key]);
+                if (parsed > 0) {
+                    return parsed;
+                }
+            }
+        }
+
+        return 0;
+    }
+
     function toggleDeleteButtons(showDelete) {
         var buttons = document.querySelectorAll('[data-temf-copy]');
-        buttons.forEach(function(btn) {
+        buttons.forEach(function (btn) {
             var url = btn.getAttribute('data-url');
             var shouldDelete = showDelete && url && state.selected.has(url);
 
@@ -97,7 +221,7 @@
         if (endpoint.storage) {
             body.append('storage_type', endpoint.storage);
         }
-        urls.forEach(function(url, index) {
+        urls.forEach(function (url, index) {
             body.append('file_urls[]', url);
             if (index === 0) {
                 body.append('file_url', url);
@@ -115,8 +239,8 @@
             },
             credentials: 'same-origin',
             body: body.toString()
-        }).then(function(res) {
-            return res.text().then(function(text) {
+        }).then(function (res) {
+            return res.text().then(function (text) {
                 if (!text) {
                     return { ok: false, msg: 'EMPTY_RESPONSE' };
                 }
@@ -128,18 +252,18 @@
             });
         });
     }
-    
+
     function insertAtCursor(field, text) {
         if (!field) {
             // no field
             return;
         }
-        
+
         try {
             var start = field.selectionStart;
             var end = field.selectionEnd;
             var val = field.value;
-            
+
             if (typeof start === "number" && typeof end === "number") {
                 field.value = val.slice(0, start) + text + val.slice(end);
                 field.selectionStart = field.selectionEnd = start + text.length;
@@ -147,7 +271,7 @@
                 field.value += text;
             }
 
-            field.dispatchEvent(new Event("input", {bubbles: true}));
+            field.dispatchEvent(new Event("input", { bubbles: true }));
             field.focus();
         } catch (e) {
             // insertAtCursor error
@@ -160,11 +284,11 @@
             }
         }
     }
-    
+
     function getEditor() {
         return document.getElementById("text");
     }
-    
+
     var state = {
         cosLoaded: false,
         ossLoaded: false,
@@ -188,11 +312,11 @@
         currentPath: ''
     };
 
-    var customSelects = (function() {
+    var customSelects = (function () {
         var registry = new Map();
 
         function closeAll(exceptId) {
-            registry.forEach(function(info, id) {
+            registry.forEach(function (info, id) {
                 if (exceptId && id === exceptId) {
                     return;
                 }
@@ -208,7 +332,7 @@
 
             var target = null;
             if (strategy === 'selected') {
-                target = options.find(function(btn) { return btn.classList.contains('selected'); });
+                target = options.find(function (btn) { return btn.classList.contains('selected'); });
             } else if (strategy === 'last') {
                 target = options[options.length - 1];
             }
@@ -220,7 +344,7 @@
             }
         }
 
-        document.addEventListener('click', function(e) {
+        document.addEventListener('click', function (e) {
             var target = e.target;
             if (!target) {
                 closeAll();
@@ -235,16 +359,16 @@
             }
         });
 
-        document.addEventListener('keydown', function(e) {
+        document.addEventListener('keydown', function (e) {
             if (e.key === 'Escape') {
                 closeAll();
             }
         });
 
         return {
-            initAll: function() {
+            initAll: function () {
                 var holders = document.querySelectorAll('.temf-select-holder');
-                holders.forEach(function(holder) {
+                holders.forEach(function (holder) {
                     var select = holder.querySelector('select');
                     if (!select || !select.id) {
                         return;
@@ -257,7 +381,7 @@
                 }, this);
             },
 
-            initSelect: function(select) {
+            initSelect: function (select) {
                 if (!select || !select.id || registry.has(select.id)) {
                     return;
                 }
@@ -293,7 +417,7 @@
 
                 var self = this;
 
-                trigger.addEventListener('click', function(ev) {
+                trigger.addEventListener('click', function (ev) {
                     ev.preventDefault();
                     ev.stopPropagation();
                     if (select.disabled) {
@@ -306,7 +430,7 @@
                     }
                 });
 
-                trigger.addEventListener('keydown', function(ev) {
+                trigger.addEventListener('keydown', function (ev) {
                     if (select.disabled) {
                         return;
                     }
@@ -321,7 +445,7 @@
                     }
                 });
 
-                holder.addEventListener('keydown', function(ev) {
+                holder.addEventListener('keydown', function (ev) {
                     if (!holder.classList.contains('open')) {
                         return;
                     }
@@ -372,7 +496,7 @@
                 this.setDisabled(select.id, select.disabled);
             },
 
-            sync: function(id) {
+            sync: function (id) {
                 var info = registry.get(id);
                 if (!info) {
                     return;
@@ -388,7 +512,7 @@
                     empty.textContent = '暂无选项';
                     dropdown.appendChild(empty);
                 } else {
-                    options.forEach(function(option) {
+                    options.forEach(function (option) {
                         var btn = document.createElement('button');
                         btn.type = 'button';
                         btn.className = 'temf-select-option';
@@ -403,7 +527,7 @@
                         if (option.selected) {
                             btn.classList.add('selected');
                         }
-                        btn.addEventListener('click', function(ev) {
+                        btn.addEventListener('click', function (ev) {
                             ev.preventDefault();
                             ev.stopPropagation();
                             if (option.disabled || select.disabled) {
@@ -418,7 +542,7 @@
                 this.updateLabel(id);
             },
 
-            updateLabel: function(id) {
+            updateLabel: function (id) {
                 var info = registry.get(id);
                 if (!info) {
                     return;
@@ -429,7 +553,7 @@
                 label.textContent = selectedOption ? (selectedOption.textContent || selectedOption.value || '请选择') : '请选择';
 
                 var buttons = info.dropdown.querySelectorAll('.temf-select-option');
-                buttons.forEach(function(btn) {
+                buttons.forEach(function (btn) {
                     var value = btn.getAttribute('data-value');
                     var isSelected = selectedOption && value === selectedOption.value;
                     btn.classList.toggle('selected', isSelected);
@@ -441,7 +565,7 @@
                 });
             },
 
-            selectOption: function(id, value, dispatchEvent) {
+            selectOption: function (id, value, dispatchEvent) {
                 var info = registry.get(id);
                 if (!info) return;
                 var select = info.select;
@@ -455,7 +579,7 @@
                 }
             },
 
-            setValue: function(id, value, options) {
+            setValue: function (id, value, options) {
                 var info = registry.get(id);
                 if (!info) return;
                 var select = info.select;
@@ -468,7 +592,7 @@
                 }
             },
 
-            setDisabled: function(id, disabled) {
+            setDisabled: function (id, disabled) {
                 var info = registry.get(id);
                 if (!info) return;
                 var isDisabled = !!disabled;
@@ -480,7 +604,7 @@
                 }
             },
 
-            open: function(id) {
+            open: function (id) {
                 var info = registry.get(id);
                 if (!info || info.select.disabled) return;
                 closeAll(id);
@@ -489,14 +613,14 @@
                 focusOption(info, 'selected');
             },
 
-            close: function(id) {
+            close: function (id) {
                 var info = registry.get(id);
                 if (!info) return;
                 info.holder.classList.remove('open');
                 info.trigger.setAttribute('aria-expanded', 'false');
             },
 
-            closeAll: function() {
+            closeAll: function () {
                 closeAll();
             }
         };
@@ -526,7 +650,7 @@
             value = value.slice(0, queryIndex);
         }
         value = value.replace(/\/+/g, '/');
-        value = value.replace(/^\/+/,'').replace(/\/+$/,'');
+        value = value.replace(/^\/+/, '').replace(/\/+$/, '');
         if (!value) return '';
         var parts = value.split('/');
         var uploadsIndex = parts.lastIndexOf('uploads');
@@ -582,7 +706,7 @@
 
     var deleteOps = {
         running: false,
-        start: function(urls) {
+        start: function (urls) {
             if (this.running) {
                 return;
             }
@@ -597,7 +721,7 @@
 
             this.running = true;
             performDelete(urls)
-                .then(function(result) {
+                .then(function (result) {
                     if (!result || result.ok === false) {
                         var msg = (result && result.msg) ? result.msg : '删除失败';
                         window.alert(msg);
@@ -605,11 +729,11 @@
                     }
 
                     var removedSet = new Set(urls);
-                    state.pagination.allFiles = (state.pagination.allFiles || []).filter(function(file) {
+                    state.pagination.allFiles = (state.pagination.allFiles || []).filter(function (file) {
                         return !removedSet.has(file.url);
                     });
 
-                    urls.forEach(function(url) {
+                    urls.forEach(function (url) {
                         var item = findItemByUrl(url);
                         if (item && item.parentNode) {
                             item.parentNode.removeChild(item);
@@ -622,10 +746,10 @@
                     selection.updateButton();
                     ui.renderCurrentPage();
                 })
-                .catch(function(err) {
+                .catch(function (err) {
                     window.alert('删除失败: ' + (err && err.message ? err.message : err));
                 })
-                .finally(function() {
+                .finally(function () {
                     deleteOps.running = false;
                 });
         }
@@ -640,35 +764,35 @@
      */
     function debounce(func, wait) {
         var timeout;
-        return function() {
+        return function () {
             var context = this;
             var args = arguments;
             clearTimeout(timeout);
-            timeout = setTimeout(function() {
+            timeout = setTimeout(function () {
                 func.apply(context, args);
             }, wait);
         };
     }
-    
+
     /**
      * 节流函数
      * 限制函数执行频率，在指定时间内最多执行一次
      */
     function throttle(func, limit) {
         var inThrottle;
-        return function() {
+        return function () {
             var context = this;
             var args = arguments;
             if (!inThrottle) {
                 func.apply(context, args);
                 inThrottle = true;
-                setTimeout(function() {
+                setTimeout(function () {
                     inThrottle = false;
                 }, limit);
             }
         };
     }
-    
+
     /**
      * 带缓存的 fetch 函数
      * 自动缓存 GET 请求，避免重复请求
@@ -681,7 +805,7 @@
 
         var method = fetchOptions.method || 'GET';
         var cacheKey = method + ':' + url;
-        
+
         // 只缓存 GET 请求
         if (method === 'GET') {
             if (bustCache) {
@@ -699,16 +823,16 @@
                 }
             }
         }
-        
+
         // 发起请求
         return fetch(url, fetchOptions)
-            .then(function(response) {
+            .then(function (response) {
                 if (!response.ok) {
                     throw new Error('HTTP ' + response.status);
                 }
                 return response.json();
             })
-            .then(function(data) {
+            .then(function (data) {
                 // 缓存 GET 请求的成功响应
                 if (method === 'GET' && data && data.ok !== false) {
                     state.requestCache[cacheKey] = {
@@ -718,12 +842,12 @@
                 }
                 return data;
             })
-            .catch(function(error) {
+            .catch(function (error) {
                 console.error('[TEMF] 请求失败:', url, error);
                 throw error;
             });
     }
-    
+
     /**
      * 动态计算每页显示的图片数量
      * 基于容器宽度、缩略图大小和配置的行数
@@ -732,21 +856,21 @@
         var rows = parseInt(TEMF_CONF.paginationRows) || 4;  // 默认4行
         var thumbSize = parseInt(TEMF_CONF.thumbSize) || 120; // 缩略图大小
         var gap = 8; // grid gap
-        
+
         // 获取容器宽度
         var body = document.querySelector('#temf-modal .temf-body');
         if (!body) {
             // 如果容器不存在，使用默认值
             return rows * 5;
         }
-        
+
         var containerWidth = body.clientWidth - 24; // 减去padding
-        
+
         // 计算每行可以放多少张图片
         var itemWidth = thumbSize + gap;
         var cols = Math.floor(containerWidth / itemWidth);
         cols = Math.max(1, cols); // 至少1列
-        
+
         // 总数 = 行数 × 列数
         var pageSize = rows * cols;
         return Math.max(pageSize, 10); // 至少10张
@@ -776,7 +900,7 @@
             var months = Object.keys(monthMap);
             for (var j = 0; j < months.length; j++) {
                 var month = months[j];
-                monthMap[month] = monthMap[month].filter(function(item) {
+                monthMap[month] = monthMap[month].filter(function (item) {
                     return item.url !== url;
                 });
                 if (monthMap[month].length === 0) {
@@ -788,78 +912,78 @@
             }
         }
     }
-    
+
     var modal = {
-        open: function() {
+        open: function () {
             try {
-            var m = byId("temf-modal");
+                var m = byId("temf-modal");
                 if (!m) {
                     // modal not found
                     return;
                 }
-            
-            m.classList.add("open");
-            m.removeAttribute("inert");
-            m.setAttribute("aria-hidden", "false");
-            
-            var title = byId("temf-title");
-            if (title) {
-                if (!title.hasAttribute("tabindex")) {
-                    title.setAttribute("tabindex", "-1");
+
+                m.classList.add("open");
+                m.removeAttribute("inert");
+                m.setAttribute("aria-hidden", "false");
+
+                var title = byId("temf-title");
+                if (title) {
+                    if (!title.hasAttribute("tabindex")) {
+                        title.setAttribute("tabindex", "-1");
+                    }
+                    title.focus();
                 }
-                title.focus();
-            }
-            
-            if (TEMF_CONF.source === 'multi' && !state.multiLoaded) {
-                multi.init();
-                state.multiLoaded = true;
-            } else if (TEMF_CONF.source === 'cos' && !state.cosLoaded) {
-                cos.init();
-                state.cosLoaded = true;
-            } else if (TEMF_CONF.source === 'oss' && !state.ossLoaded) {
-                oss.init();
-                state.ossLoaded = true;
-            } else if (TEMF_CONF.source === 'upyun' && !state.upyunLoaded) {
-                upyun.init();
-                state.upyunLoaded = true;
-            } else if (TEMF_CONF.source === 'lsky' && !state.lskyLoaded) {
-                lsky.init();
-                state.lskyLoaded = true;
-            } else if (TEMF_CONF.source === 'local') {
+
+                if (TEMF_CONF.source === 'multi' && !state.multiLoaded) {
+                    multi.init();
+                    state.multiLoaded = true;
+                } else if (TEMF_CONF.source === 'cos' && !state.cosLoaded) {
+                    cos.init();
+                    state.cosLoaded = true;
+                } else if (TEMF_CONF.source === 'oss' && !state.ossLoaded) {
+                    oss.init();
+                    state.ossLoaded = true;
+                } else if (TEMF_CONF.source === 'upyun' && !state.upyunLoaded) {
+                    upyun.init();
+                    state.upyunLoaded = true;
+                } else if (TEMF_CONF.source === 'lsky' && !state.lskyLoaded) {
+                    lsky.init();
+                    state.lskyLoaded = true;
+                } else if (TEMF_CONF.source === 'local') {
                     local.buildYearMonth();
                     local.renderCurrentMonth();
-            }
+                }
             } catch (e) {
                 // open modal error
             }
         },
-        
-        close: function() {
+
+        close: function () {
             try {
-            var m = byId("temf-modal");
+                var m = byId("temf-modal");
                 if (!m) {
                     // modal not found
                     return;
                 }
-            
-            m.classList.remove("open");
-            m.setAttribute("aria-hidden", "true");
-            m.setAttribute("inert", "");
-            
-            if (document.activeElement && m.contains(document.activeElement)) {
-                document.activeElement.blur();
-            }
-            
-            var trigger = byId("temf-open");
-            if (trigger) {
-                trigger.focus();
+
+                m.classList.remove("open");
+                m.setAttribute("aria-hidden", "true");
+                m.setAttribute("inert", "");
+
+                if (document.activeElement && m.contains(document.activeElement)) {
+                    document.activeElement.blur();
+                }
+
+                var trigger = byId("temf-open");
+                if (trigger) {
+                    trigger.focus();
                 }
             } catch (e) {
                 // close modal error
             }
         }
     };
-    
+
     function getDeleteEndpoint(url) {
         var sec = byId('temediafolder');
         if (!sec || !url) {
@@ -930,63 +1054,63 @@
     }
 
     var local = {
-        buildYearMonth: function() {
+        buildYearMonth: function () {
             try {
-            var ySel = byId("temf-year");
-            var mSel = byId("temf-month");
+                var ySel = byId("temf-year");
+                var mSel = byId("temf-month");
                 if (!ySel || !mSel) {
                     // selector not found
                     return;
                 }
-            
-            ySel.innerHTML = '';
-            mSel.innerHTML = '';
-                
+
+                ySel.innerHTML = '';
+                mSel.innerHTML = '';
+
                 // 确保数据存在
                 if (!TEMF_CONF.data || typeof TEMF_CONF.data !== 'object') {
                     // no local data
                     return;
                 }
-            
-            var years = Object.keys(TEMF_CONF.data).sort(function(a, b) {
-                return b - a;
-            });
-                
+
+                var years = Object.keys(TEMF_CONF.data).sort(function (a, b) {
+                    return b - a;
+                });
+
                 if (years.length === 0) {
                     // no years data
                     return;
                 }
-            
-            years.forEach(function(year) {
-                var opt = document.createElement('option');
-                opt.value = year;
-                opt.textContent = year;
-                ySel.appendChild(opt);
-            });
-            customSelects.sync('temf-year');
-            
-            var latest = TEMF_CONF.latest ? TEMF_CONF.latest.split('-') : null;
-            var curYear = latest ? latest[0] : years[0];
-            customSelects.setValue('temf-year', curYear, { silent: true });
-            
-            this.buildMonths(curYear);
-            
+
+                years.forEach(function (year) {
+                    var opt = document.createElement('option');
+                    opt.value = year;
+                    opt.textContent = year;
+                    ySel.appendChild(opt);
+                });
+                customSelects.sync('temf-year');
+
+                var latest = TEMF_CONF.latest ? TEMF_CONF.latest.split('-') : null;
+                var curYear = latest ? latest[0] : years[0];
+                customSelects.setValue('temf-year', curYear, { silent: true });
+
+                this.buildMonths(curYear);
+
                 if (latest && latest.length > 1) {
-                customSelects.setValue('temf-month', latest[1], { silent: true });
+                    customSelects.setValue('temf-month', latest[1], { silent: true });
                 }
             } catch (e) {
                 // build selectors error
             }
         },
-        
-        buildMonths: function(year) {
+
+        buildMonths: function (year) {
             var mSel = byId("temf-month");
             if (!mSel) return;
-            
+
             mSel.innerHTML = '';
             var months = Object.keys(TEMF_CONF.data[year] || {}).sort().reverse();
-            
-            months.forEach(function(month) {
+
+            months.forEach(function (month) {
                 var opt = document.createElement('option');
                 opt.value = month;
                 opt.textContent = month;
@@ -995,41 +1119,44 @@
 
             customSelects.sync('temf-month');
         },
-        
-        renderCurrentMonth: function() {
+
+        renderCurrentMonth: function () {
             try {
-            var ySel = byId("temf-year");
-            var mSel = byId("temf-month");
-            var body = document.querySelector('#temf-modal .temf-body');
-            
+                var ySel = byId("temf-year");
+                var mSel = byId("temf-month");
+                var body = document.querySelector('#temf-modal .temf-body');
+
                 if (!ySel || !mSel || !body) {
                     // required elements missing
                     return;
                 }
-            
-            var year = ySel.value;
-            var month = mSel.value;
-                
+
+                var year = ySel.value;
+                var month = mSel.value;
+
                 if (!year || !month) {
                     // ym not selected
                     return;
                 }
 
                 setCurrentPath(year + '/' + month);
-                
+
+                // 零填充月份以匹配后端标准化的数据键（如 "1" -> "01"）
+                var paddedMonth = month.length === 1 ? '0' + month : month;
+
                 var items = [];
-                if (TEMF_CONF.data && TEMF_CONF.data[year] && TEMF_CONF.data[year][month]) {
-                    items = TEMF_CONF.data[year][month];
+                if (TEMF_CONF.data && TEMF_CONF.data[year] && TEMF_CONF.data[year][paddedMonth]) {
+                    items = TEMF_CONF.data[year][paddedMonth];
                 }
-            
-            // 使用统一的 renderFiles 方法，支持分页
-            ui.renderFiles(items);
+
+                // 使用统一的 renderFiles 方法，支持分页
+                ui.renderFiles(items);
             } catch (e) {
                 // render error
             }
         },
 
-        updateDataFromResponse: function(payload) {
+        updateDataFromResponse: function (payload) {
             if (!payload || !Array.isArray(payload.files)) {
                 return;
             }
@@ -1040,23 +1167,37 @@
             var latestMonth = null;
 
             if (payload.groups && typeof payload.groups === 'object') {
-                Object.keys(payload.groups).forEach(function(ym) {
+                Object.keys(payload.groups).forEach(function (ym) {
                     var parts = ym.split('-');
                     if (parts.length !== 2) return;
                     var year = parts[0];
                     var month = parts[1].padStart(2, '0');
                     grouped[year] = grouped[year] || {};
-                    grouped[year][month] = (payload.groups[ym] || []).map(function(item) {
+                    grouped[year][month] = (payload.groups[ym] || []).map(function (item) {
                         var copy = Object.assign({}, item);
                         copy.group = copy.group || (year + '-' + month);
                         copy.mtime = copy.mtime || 0;
+
+                        // 标准化目录路径并零填充月份（与Renderer.php逻辑一致）
+                        var directory = normalizeDirectoryPath(copy.directory || '');
+                        if (directory) {
+                            var parts = directory.split('/');
+                            if (parts.length >= 2 && /^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) {
+                                parts[1] = parts[1].padStart(2, '0');
+                                directory = parts.join('/');
+                            }
+                        }
+                        copy.directory = directory;
+
+                        copy.thumbnail = copy.thumbnail || '';
+                        copy.id = copy.id || '';
                         return copy;
                     });
                 });
             }
 
             if (Object.keys(grouped).length === 0) {
-                payload.files.forEach(function(item) {
+                payload.files.forEach(function (item) {
                     if (!item || !item.group) return;
                     var parts = String(item.group).split('-');
                     if (parts.length !== 2) return;
@@ -1064,13 +1205,28 @@
                     var month = parts[1].padStart(2, '0');
                     grouped[year] = grouped[year] || {};
                     grouped[year][month] = grouped[year][month] || [];
-                    grouped[year][month].push(Object.assign({}, item));
+                    var clone = Object.assign({}, item);
+
+                    // 标准化目录路径并零填充月份（与Renderer.php逻辑一致）
+                    var directory = normalizeDirectoryPath(clone.directory || '');
+                    if (directory) {
+                        var parts = directory.split('/');
+                        if (parts.length >= 2 && /^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) {
+                            parts[1] = parts[1].padStart(2, '0');
+                            directory = parts.join('/');
+                        }
+                    }
+                    clone.directory = directory;
+
+                    clone.thumbnail = clone.thumbnail || '';
+                    clone.id = clone.id || '';
+                    grouped[year][month].push(clone);
                 });
             }
 
-            Object.keys(grouped).forEach(function(year) {
-                Object.keys(grouped[year]).forEach(function(month) {
-                    grouped[year][month].forEach(function(item) {
+            Object.keys(grouped).forEach(function (year) {
+                Object.keys(grouped[year]).forEach(function (month) {
+                    grouped[year][month].forEach(function (item) {
                         var ts = item.mtime || 0;
                         if (ts > latestMtime) {
                             latestMtime = ts;
@@ -1092,90 +1248,117 @@
             }
         },
 
-        fetchLatest: function(options) {
+        fetchLatest: function (options) {
             var sec = byId('temediafolder');
             if (!sec) return Promise.resolve();
             var url = sec.getAttribute('data-local-list');
             if (!url) return Promise.resolve();
 
+            // 保存当前选择的年月
+            var ySel = byId('temf-year');
+            var mSel = byId('temf-month');
+            var currentYear = ySel ? ySel.value : null;
+            var currentMonth = mSel ? mSel.value : null;
+
             var fetchOptions = options && options.bustCache ? { bustCache: true } : {};
             return cachedFetch(url, fetchOptions)
-                .then(function(resp) {
+                .then(function (resp) {
                     if (!resp || resp.ok === false) {
                         return;
                     }
                     local.updateDataFromResponse(resp);
                     local.buildYearMonth();
+
+                    // 恢复之前选择的年月（如果存在）
+                    if (currentYear && currentMonth) {
+                        var ySel = byId('temf-year');
+                        var mSel = byId('temf-month');
+
+                        // 验证保存的年份是否仍然存在
+                        if (ySel && TEMF_CONF.data && TEMF_CONF.data[currentYear]) {
+                            customSelects.setValue('temf-year', currentYear, { silent: true });
+                            local.buildMonths(currentYear);
+
+
+                            // 验证保存的月份是否仍然存在
+                            // 零填充月份以匹配后端标准化的数据键
+                            var paddedMonth = currentMonth.length === 1 ? '0' + currentMonth : currentMonth;
+                            if (mSel && TEMF_CONF.data[currentYear][paddedMonth]) {
+                                customSelects.setValue('temf-month', currentMonth, { silent: true });
+                            }
+                        }
+                    }
+
                     local.renderCurrentMonth();
                 })
-                .catch(function(err) {
+                .catch(function (err) {
                     console.error('[TEMF] Failed to refresh local files', err);
                 });
         }
     };
-    
+
     // 通用云存储处理器 - 合并 COS 和 OSS 的重复逻辑
     var cloudStorage = {
         /**
          * 初始化目录选择器
          * @param {string} storageType - 'cos' 或 'oss'
          */
-        init: function(storageType, options) {
+        init: function (storageType, options) {
             var dir = byId('temf-dir');
             var sub = byId('temf-subdir');
             if (!dir || !sub) return;
-            
+
             this.initDirectorySelectors(dir, sub);
             setCurrentPath('');
-            
+
             var self = this;
-            this.fetch(storageType, '', function(data) {
+            this.fetch(storageType, '', function (data) {
                 self.populateFolders(dir, data.folders || []);
                 ui.renderFiles(data.files || []);
             }, options);
         },
-        
+
         /**
          * 初始化目录选择器
          */
-        initDirectorySelectors: function(dir, sub) {
+        initDirectorySelectors: function (dir, sub) {
             dir.innerHTML = '';
             sub.innerHTML = '';
-            
+
             var optRoot = document.createElement('option');
             optRoot.value = '';
             optRoot.textContent = '/';
             dir.appendChild(optRoot);
-            
+
             var optRoot2 = document.createElement('option');
             optRoot2.value = '';
             optRoot2.textContent = '/';
             sub.appendChild(optRoot2);
         },
-        
+
         /**
          * 填充文件夹选项
          */
-        populateFolders: function(dirElement, folders) {
-                folders.forEach(function(folder) {
-                    var opt = document.createElement('option');
-                    opt.value = folder.path || folder.name;
-                    opt.textContent = folder.name || folder.path;
+        populateFolders: function (dirElement, folders) {
+            folders.forEach(function (folder) {
+                var opt = document.createElement('option');
+                opt.value = folder.path || folder.name;
+                opt.textContent = folder.name || folder.path;
                 dirElement.appendChild(opt);
             });
         },
-        
+
         /**
          * 通用fetch方法（带缓存）
          */
-        fetch: function(storageType, path, callback, options) {
+        fetch: function (storageType, path, callback, options) {
             var sec = byId('temediafolder');
             if (!sec) return;
-            
+
             var attrName = 'data-' + storageType + '-list';
             var base = sec.getAttribute(attrName);
             if (!base) return;
-            
+
             var url = base;
             if (path) {
                 url += (base.indexOf('?') >= 0 ? '&' : '?') + 'temf_path=' + encodeURIComponent(path);
@@ -1184,48 +1367,48 @@
             // 使用统一的 cachedFetch（自动处理缓存）
             var fetchOptions = (options && options.bustCache) ? { bustCache: true } : {};
             cachedFetch(url, fetchOptions)
-                .then(function(data) {
+                .then(function (data) {
                     callback && callback(data);
                 })
-                .catch(function() { 
-                    callback && callback({folders: [], files: []}); 
+                .catch(function () {
+                    callback && callback({ folders: [], files: [] });
                 });
         }
     };
-    
+
     // COS 和 OSS 使用共享的云存储处理器
     var cos = {
-        init: function() { cloudStorage.init('cos'); },
-        fetch: function(path, callback) { cloudStorage.fetch('cos', path, callback); }
+        init: function () { cloudStorage.init('cos'); },
+        fetch: function (path, callback) { cloudStorage.fetch('cos', path, callback); }
     };
-    
+
     var oss = {
-        init: function() { cloudStorage.init('oss'); },
-        fetch: function(path, callback) { cloudStorage.fetch('oss', path, callback); }
+        init: function () { cloudStorage.init('oss'); },
+        fetch: function (path, callback) { cloudStorage.fetch('oss', path, callback); }
     };
-    
+
     var upyun = {
-        init: function() { cloudStorage.init('upyun'); },
-        fetch: function(path, callback) { cloudStorage.fetch('upyun', path, callback); }
+        init: function () { cloudStorage.init('upyun'); },
+        fetch: function (path, callback) { cloudStorage.fetch('upyun', path, callback); }
     };
-    
+
     var lsky = {
-        init: function(options) {
+        init: function (options) {
             var dir = byId('temf-dir');
             var sub = byId('temf-subdir');
             if (!dir || !sub) return;
-            
+
             setCurrentPath('');
 
             // 兰空图床使用特殊的选择器
             dir.innerHTML = '';
-            
+
             // 添加"全部"选项
             var optAll = document.createElement('option');
             optAll.value = '';
             optAll.textContent = '全部';
             dir.appendChild(optAll);
-            
+
             // 添加"相册"选项（如果配置了相册ID）
             // 单模式下检查TEMF_CONF配置
             var hasAlbumId = TEMF_CONF.lskyAlbumId && TEMF_CONF.lskyAlbumId !== '';
@@ -1234,33 +1417,33 @@
                 optAlbum.value = 'album';
                 optAlbum.textContent = '相册';
                 dir.appendChild(optAlbum);
-                
+
                 // 如果配置了相册ID，默认选中相册
                 dir.value = 'album';
             }
-            
+
             // 隐藏子目录选择器
             sub.style.display = 'none';
-            
+
             // 根据当前选择加载数据
             var currentSelection = dir.value || '';
             var fetchPath = currentSelection === 'album' ? 'album' : '';
-            
-            this.fetch(fetchPath, function(data) {
+
+            this.fetch(fetchPath, function (data) {
                 ui.renderFiles(data.files || []);
                 customSelects.sync('temf-dir');
             }, options);
         },
-        
-        fetch: function(path, callback, options) {
+
+        fetch: function (path, callback, options) {
             var sec = byId('temediafolder');
             if (!sec) return;
-            
+
             var base = sec.getAttribute('data-lsky-list');
             if (!base) return;
-            
+
             var url = base;
-            
+
             // 处理兰空图床的特殊参数
             if (path === 'album') {
                 // 使用相册ID参数
@@ -1271,73 +1454,73 @@
 
             var fetchOptions = (options && options.bustCache) ? { bustCache: true } : {};
             cachedFetch(url, fetchOptions)
-                .then(function(data) {
+                .then(function (data) {
                     callback && callback(data);
                 })
-                .catch(function() {
-                    callback && callback({folders: [], files: []});
+                .catch(function () {
+                    callback && callback({ folders: [], files: [] });
                 });
         }
     };
-    
+
     var multi = {
-        init: function() {
+        init: function () {
             var sec = byId('temediafolder');
             if (!sec) return;
-            
+
             var storageTypesUrl = sec.getAttribute('data-storage-types');
             if (!storageTypesUrl) return;
-            
+
             // 获取可用的存储类型
             cachedFetch(storageTypesUrl)
-                .then(function(data) {
+                .then(function (data) {
                     if (data.ok && data.types) {
                         state.availableStorages = data.types;
                         multi.buildSwitcher();
-                        
+
                         // 默认选择第一个可用存储
                         if (data.types.length > 0) {
                             multi.switchTo(data.types[0].key);
                         }
                     }
                 })
-                .catch(function() {
+                .catch(function () {
                 });
         },
-        
-        buildSwitcher: function() {
+
+        buildSwitcher: function () {
             var switcher = byId('temf-storage-switcher');
             if (!switcher || state.availableStorages.length === 0) return;
-            
+
             switcher.innerHTML = '';
-            
-            state.availableStorages.forEach(function(storage) {
+
+            state.availableStorages.forEach(function (storage) {
                 var btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'temf-storage-btn';
                 btn.setAttribute('data-storage', storage.key);
-                btn.textContent = storage.name; 
-                
-                btn.addEventListener('click', function() {
+                btn.textContent = storage.name;
+
+                btn.addEventListener('click', function () {
                     multi.switchTo(storage.key);
                 });
-                
+
                 switcher.appendChild(btn);
             });
-            
+
             // 添加标题点击事件
             var title = byId('temf-title');
             var container = document.querySelector('.temf-title-container');
             if (title && container) {
-                title.addEventListener('click', function(e) {
+                title.addEventListener('click', function (e) {
                     e.stopPropagation();
                     container.classList.toggle('expanded');
                     switcher.classList.toggle('show');
                 });
             }
-            
+
             // 添加点击外部区域自动收起功能
-            document.addEventListener('click', function(e) {
+            document.addEventListener('click', function (e) {
                 var titleWrapper = document.querySelector('.temf-title-wrapper');
                 if (titleWrapper && !titleWrapper.contains(e.target)) {
                     var switcher = byId('temf-storage-switcher');
@@ -1349,11 +1532,11 @@
                 }
             });
         },
-        
-        switchTo: function(storageType) {
+
+        switchTo: function (storageType) {
             state.currentStorage = storageType;
             setCurrentPath('');
-            
+
             // 性能优化：切换模式时清除缓存
             ui._clearCache();
 
@@ -1361,7 +1544,7 @@
             if (selection && typeof selection.clear === 'function') {
                 selection.clear();
             }
-            
+
             // 重置分页状态
             state.pagination.currentPage = 1;
             state.pagination.totalItems = 0;
@@ -1372,7 +1555,7 @@
             if (oldInput && oldInput.parentNode) {
                 oldInput.parentNode.removeChild(oldInput);
             }
-            
+
             // 自动收起存储切换器
             var switcher = byId('temf-storage-switcher');
             var container = document.querySelector('.temf-title-container');
@@ -1380,7 +1563,7 @@
                 switcher.classList.remove('show');
                 container.classList.remove('expanded');
             }
-            
+
             // 获取存储类型的中文名称
             var storageNames = {
                 'local': '本地存储',
@@ -1390,40 +1573,44 @@
                 'lsky': '兰空图床'
             };
             var storageName = storageNames[storageType] || storageType;
-            
+
             // 更新标题显示当前存储类型（只显示存储名称）
             var title = byId('temf-title');
             if (title) {
                 title.textContent = storageName;
             }
-            
+
             // 添加切换动画和加载提示
             var body = document.querySelector('#temf-modal .temf-body');
+            var dialog = document.querySelector('#temf-modal .temf-dialog');
             if (body) {
                 body.classList.add('temf-content-switching');
-                // 移除已有遮罩
-                var existed = body.querySelector('.temf-switching-overlay');
-                if (existed && existed.parentNode) existed.parentNode.removeChild(existed);
-                // 叠加白色遮罩，不清空原有网格，避免闪烁
+            }
+            if (dialog) {
+                dialog.classList.add('temf-switching-active');
+                var existingOverlay = dialog.querySelector('.temf-switching-overlay');
+                if (existingOverlay && existingOverlay.parentNode) {
+                    existingOverlay.parentNode.removeChild(existingOverlay);
+                }
                 var overlay = document.createElement('div');
                 overlay.className = 'temf-switching-overlay';
                 overlay.innerHTML = '<div class="temf-switching-spinner"></div>' +
                     '<div class="temf-switching-text">正在切换到 ' + storageName + '...</div>';
-                body.appendChild(overlay);
+                dialog.appendChild(overlay);
             }
-            
+
             // 更新按钮状态
             var buttons = document.querySelectorAll('.temf-storage-btn');
-            buttons.forEach(function(btn) {
+            buttons.forEach(function (btn) {
                 if (btn.getAttribute('data-storage') === storageType) {
                     btn.classList.add('active');
                 } else {
                     btn.classList.remove('active');
                 }
             });
-            
+
             // 延迟执行切换逻辑，让动画效果更平滑
-            setTimeout(function() {
+            setTimeout(function () {
                 // 根据存储类型初始化相应的选择器
                 if (storageType === 'local') {
                     multi.hideDirectorySelectors();
@@ -1437,11 +1624,11 @@
                     multi.showDirectorySelectors();
                     multi.hideLocalSelectors();
                     multi.initDirectorySelectors();
-                    
-                    multi.fetch('', function(data) {
+
+                    multi.fetch('', function (data) {
                         var dir = byId('temf-dir');
                         if (dir && data.folders) {
-                            data.folders.forEach(function(folder) {
+                            data.folders.forEach(function (folder) {
                                 var opt = document.createElement('option');
                                 opt.value = folder.path || folder.name;
                                 opt.textContent = folder.name || folder.path;
@@ -1456,23 +1643,27 @@
                 }
             }, 150);
         },
-        
-        finishSwitchAnimation: function() {
+
+        finishSwitchAnimation: function () {
             var body = document.querySelector('#temf-modal .temf-body');
+            var dialog = document.querySelector('#temf-modal .temf-dialog');
             if (body) {
                 body.classList.remove('temf-content-switching');
                 body.classList.add('temf-content-switched');
-                var overlay = body.querySelector('.temf-switching-overlay');
-                if (overlay && overlay.parentNode) {
-                    overlay.parentNode.removeChild(overlay);
-                }
-                setTimeout(function() {
+                setTimeout(function () {
                     body.classList.remove('temf-content-switched');
                 }, 200);
             }
+            if (dialog) {
+                dialog.classList.remove('temf-switching-active');
+                var overlay = dialog.querySelector('.temf-switching-overlay');
+                if (overlay && overlay.parentNode) {
+                    overlay.parentNode.removeChild(overlay);
+                }
+            }
         },
-        
-        initDirectorySelectors: function() {
+
+        initDirectorySelectors: function () {
             var dir = byId('temf-dir');
             var sub = byId('temf-subdir');
             if (dir && sub) {
@@ -1481,7 +1672,7 @@
                 optRoot.value = '';
                 optRoot.textContent = '/';
                 dir.appendChild(optRoot);
-                
+
                 sub.innerHTML = '';
                 var optRoot2 = document.createElement('option');
                 optRoot2.value = '';
@@ -1492,41 +1683,41 @@
                 customSelects.sync('temf-subdir');
             }
         },
-        
-        showDirectorySelectors: function() {
+
+        showDirectorySelectors: function () {
             setSelectVisibility('temf-dir', true);
             setSelectVisibility('temf-subdir', true);
         },
-        
-        hideDirectorySelectors: function() {
+
+        hideDirectorySelectors: function () {
             setSelectVisibility('temf-dir', false);
             setSelectVisibility('temf-subdir', false);
         },
-        
-        showLocalSelectors: function() {
+
+        showLocalSelectors: function () {
             setSelectVisibility('temf-year', true);
             setSelectVisibility('temf-month', true);
         },
-        
-        hideLocalSelectors: function() {
+
+        hideLocalSelectors: function () {
             setSelectVisibility('temf-year', false);
             setSelectVisibility('temf-month', false);
         },
-        
-        initLskySelectors: function() {
+
+        initLskySelectors: function () {
             var dir = byId('temf-dir');
             var sub = byId('temf-subdir');
-            
+
             if (dir) {
                 setSelectVisibility('temf-dir', true);
                 dir.innerHTML = '';
-                
+
                 // 添加"全部"选项
                 var optAll = document.createElement('option');
                 optAll.value = '';
                 optAll.textContent = '全部';
                 dir.appendChild(optAll);
-                
+
                 // 添加"相册"选项（如果配置了相册ID）
                 var hasAlbumId = this.hasLskyAlbumConfig();
                 if (hasAlbumId) {
@@ -1534,7 +1725,7 @@
                     optAlbum.value = 'album';
                     optAlbum.textContent = '相册';
                     dir.appendChild(optAlbum);
-                    
+
                     // 如果配置了相册ID，默认选中相册
                     customSelects.setValue('temf-dir', 'album', { silent: true });
                 } else {
@@ -1542,41 +1733,41 @@
                 }
                 customSelects.sync('temf-dir');
             }
-            
+
             // 隐藏子目录选择器
             setSelectVisibility('temf-subdir', false);
         },
-        
-        hasLskyAlbumConfig: function() {
+
+        hasLskyAlbumConfig: function () {
             // 检查是否配置了兰空图床的相册ID
             // 从可用存储列表中获取兰空图床的配置信息
-            var lskyStorage = state.availableStorages.find(function(storage) {
+            var lskyStorage = state.availableStorages.find(function (storage) {
                 return storage.key === 'lsky';
             });
-            
+
             return lskyStorage && lskyStorage.hasAlbumId;
         },
-        
-        loadLskyData: function(options) {
+
+        loadLskyData: function (options) {
             // 根据当前选择加载数据
             var dir = byId('temf-dir');
             var currentSelection = dir ? dir.value : '';
             var fetchPath = currentSelection === 'album' ? 'album' : '';
             setCurrentPath('');
-            
-            this.fetch(fetchPath, function(data) {
-                    ui.renderFiles(data.files || []);
-                    multi.finishSwitchAnimation();
+
+            this.fetch(fetchPath, function (data) {
+                ui.renderFiles(data.files || []);
+                multi.finishSwitchAnimation();
             }, options);
         },
-        
-        loadLocalData: function(options) {
+
+        loadLocalData: function (options) {
             // 通过API获取本地文件数据
-            this.fetch('', function(data) {
+            this.fetch('', function (data) {
                 if (data.ok && data.files) {
                     // 将本地文件数据转换为TEMF_CONF.data格式
                     multi.buildLocalDataStructure(data.files);
-                    
+
                     // 构建年份/月份选择器
                     local.buildYearMonth();
                     local.renderCurrentMonth();
@@ -1584,31 +1775,31 @@
                     // 没有数据时显示空状态
                     ui.renderFiles([]);
                 }
-                
+
                 // 完成切换动画
                 multi.finishSwitchAnimation();
             });
         },
-        
-        buildLocalDataStructure: function(files) {
+
+        buildLocalDataStructure: function (files) {
             // 初始化数据结构
             TEMF_CONF.data = {};
             TEMF_CONF.latest = null;
-            
+
             var latestMtime = 0;
             var latestYear = null;
             var latestMonth = null;
-            
+
             // 按年月分组文件
-            files.forEach(function(file) {
+            files.forEach(function (file) {
                 if (!file.group) return; // group格式应该是 "YYYY-MM"
-                
+
                 var parts = file.group.split('-');
                 if (parts.length !== 2) return;
-                
+
                 var year = parts[0];
                 var month = parts[1];
-                
+
                 // 初始化年月结构
                 if (!TEMF_CONF.data[year]) {
                     TEMF_CONF.data[year] = {};
@@ -1616,15 +1807,18 @@
                 if (!TEMF_CONF.data[year][month]) {
                     TEMF_CONF.data[year][month] = [];
                 }
-                
+
                 // 添加文件到对应年月
                 TEMF_CONF.data[year][month].push({
                     url: file.url,
                     name: file.name,
                     mtime: file.mtime || 0,
-                    size: file.size || 0
+                    size: file.size || 0,
+                    directory: normalizeDirectoryPath(file.directory || ''),
+                    thumbnail: file.thumbnail || '',
+                    id: file.id || ''
                 });
-                
+
                 // 记录最新的文件时间
                 var fileMtime = file.mtime || 0;
                 if (fileMtime > latestMtime) {
@@ -1633,23 +1827,23 @@
                     latestMonth = month;
                 }
             });
-            
+
             // 设置最新的年月
             if (latestYear && latestMonth) {
                 TEMF_CONF.latest = latestYear + '-' + latestMonth;
             }
-            
+
             // 对每个月的文件按时间排序（最新的在前）
-            Object.keys(TEMF_CONF.data).forEach(function(year) {
-                Object.keys(TEMF_CONF.data[year]).forEach(function(month) {
-                    TEMF_CONF.data[year][month].sort(function(a, b) {
+            Object.keys(TEMF_CONF.data).forEach(function (year) {
+                Object.keys(TEMF_CONF.data[year]).forEach(function (month) {
+                    TEMF_CONF.data[year][month].sort(function (a, b) {
                         return (b.mtime || 0) - (a.mtime || 0);
                     });
                 });
             });
         },
-        
-        fetch: function(path, callback, options) {
+
+        fetch: function (path, callback, options) {
             var sec = byId('temediafolder');
             if (!sec || !state.currentStorage) return;
 
@@ -1684,19 +1878,19 @@
             url += (hasQuery ? '&' : '?') + params.join('&');
 
             cachedFetch(url, fetchOptions)
-                .then(function(data) {
+                .then(function (data) {
                     callback && callback(data);
                 })
-                .catch(function(error) {
+                .catch(function (error) {
                     console.error('[TEMF] 多存储 fetch 失败', error);
-                    callback && callback({folders: [], files: []});
+                    callback && callback({ folders: [], files: [] });
                 });
         },
     };
-    
+
     var rename = {
         active: null,
-        start: function(nameSpan) {
+        start: function (nameSpan) {
             if (!nameSpan || nameSpan.classList.contains('editing')) {
                 return;
             }
@@ -1745,14 +1939,14 @@
 
             if (!objectId) {
                 var files = state.pagination && Array.isArray(state.pagination.allFiles) ? state.pagination.allFiles : [];
-                var match = files.find(function(file) { return file.url === item.getAttribute('data-url'); });
+                var match = files.find(function (file) { return file.url === item.getAttribute('data-url'); });
                 if (match && match.id != null) {
                     objectId = String(match.id);
                 }
             }
 
             var self = this;
-            input.addEventListener('keydown', function(ev) {
+            input.addEventListener('keydown', function (ev) {
                 if (ev.key === 'Enter') {
                     ev.preventDefault();
                     self.commit();
@@ -1762,8 +1956,8 @@
                 }
             });
 
-            input.addEventListener('blur', function() {
-                setTimeout(function() {
+            input.addEventListener('blur', function () {
+                setTimeout(function () {
                     if (self.active && self.active.input === input) {
                         self.cancel();
                     }
@@ -1781,7 +1975,7 @@
                 objectId: objectId
             };
         },
-        cancel: function(silent) {
+        cancel: function (silent) {
             if (!this.active) return;
 
             var span = this.active.span;
@@ -1798,7 +1992,7 @@
                 selection.updateButton();
             }
         },
-        showError: function(message) {
+        showError: function (message) {
             if (!this.active) return;
             var hint = this.active.hint;
             var input = this.active.input;
@@ -1810,7 +2004,7 @@
                 input.classList.add('has-error');
             }
         },
-        hideError: function() {
+        hideError: function () {
             if (!this.active) return;
             var hint = this.active.hint;
             var input = this.active.input;
@@ -1821,7 +2015,7 @@
                 input.classList.remove('has-error');
             }
         },
-        commit: function() {
+        commit: function () {
             if (!this.active) return;
 
             var input = this.active.input;
@@ -1856,46 +2050,46 @@
                 credentials: 'same-origin',
                 body: endpointInfo.body(baseName, this.active)
             })
-            .then(function(res) {
-                return res.text().then(function(text) {
-                    var data = null;
-                    if (text) {
-                        try {
-                            data = JSON.parse(text);
-                        } catch (parseErr) {
-                            throw new Error('INVALID_JSON:' + parseErr.message);
+                .then(function (res) {
+                    return res.text().then(function (text) {
+                        var data = null;
+                        if (text) {
+                            try {
+                                data = JSON.parse(text);
+                            } catch (parseErr) {
+                                throw new Error('INVALID_JSON:' + parseErr.message);
+                            }
+                        }
+                        if (!data) {
+                            throw new Error('EMPTY_RESPONSE');
+                        }
+                        return data;
+                    });
+                })
+                .then(function (result) {
+                    if (!result || result.ok === false) {
+                        self.showError(result && result.msg ? result.msg : '重命名失败');
+                        input.disabled = false;
+                        input.focus();
+                        input.select();
+                        return;
+                    }
+                    self.applySuccess(result);
+                })
+                .catch(function (err) {
+                    console.error('[TEMF] Rename failed', err);
+                    var msg = '重命名请求失败';
+                    if (err && typeof err.message === 'string') {
+                        if (err.message.indexOf('INVALID_JSON') === 0 || err.message === 'EMPTY_RESPONSE') {
+                            msg = '重命名接口返回数据异常';
                         }
                     }
-                    if (!data) {
-                        throw new Error('EMPTY_RESPONSE');
-                    }
-                    return data;
-                });
-            })
-            .then(function(result) {
-                if (!result || result.ok === false) {
-                    self.showError(result && result.msg ? result.msg : '重命名失败');
+                    self.showError(msg);
                     input.disabled = false;
                     input.focus();
-                    input.select();
-                    return;
-                }
-                self.applySuccess(result);
-            })
-            .catch(function(err) {
-                console.error('[TEMF] Rename failed', err);
-                var msg = '重命名请求失败';
-                if (err && typeof err.message === 'string') {
-                    if (err.message.indexOf('INVALID_JSON') === 0 || err.message === 'EMPTY_RESPONSE') {
-                        msg = '重命名接口返回数据异常';
-                    }
-                }
-                self.showError(msg);
-                input.disabled = false;
-                input.focus();
-            });
+                });
         },
-        getRenameEndpoint: function() {
+        getRenameEndpoint: function () {
             if (!this.active) {
                 return { supported: false };
             }
@@ -1919,7 +2113,7 @@
                 return {
                     supported: true,
                     url: localRename,
-                    body: function(baseName, active) {
+                    body: function (baseName, active) {
                         return new URLSearchParams({
                             file_url: oldUrl,
                             new_name: baseName
@@ -1936,7 +2130,7 @@
                 return {
                     supported: true,
                     url: singleRename,
-                    body: function(baseName, active) {
+                    body: function (baseName, active) {
                         var params = new URLSearchParams({
                             file_url: oldUrl,
                             new_name: baseName
@@ -1964,7 +2158,7 @@
                 return {
                     supported: true,
                     url: multiRename,
-                    body: function(baseName, active) {
+                    body: function (baseName, active) {
                         var params = new URLSearchParams({
                             storage_type: currentStorage,
                             file_url: oldUrl,
@@ -1980,7 +2174,7 @@
 
             return { supported: false, message: '当前存储暂不支持重命名' };
         },
-        applySuccess: function(result) {
+        applySuccess: function (result) {
             if (!this.active) return;
 
             var active = this.active;
@@ -2057,22 +2251,38 @@
             var directoryValue = typeof result.directory === 'string'
                 ? result.directory
                 : (item.getAttribute('data-directory') || '');
-            var normalizedDir = directoryValue ? directoryValue.replace(/^\/+|\/+$/g, '') : '';
-            var displayDirectory = normalizedDir ? '/' + normalizedDir : '/';
+            var normalizedDir = directoryValue ? directoryValue.replace(/^\/+/, '').replace(/\/+$/g, '') : '';
             var directorySpan = item.querySelector('.temf-directory');
+            var existingSizeAttr = item.getAttribute('data-size') || (directorySpan ? directorySpan.getAttribute('data-size') : '');
+            var sizeValue = existingSizeAttr ? Number(existingSizeAttr) : 0;
+            if (!isFinite(sizeValue) || sizeValue <= 0) {
+                sizeValue = 0;
+            }
+            var displayDirectory = formatDirectoryLabel(normalizedDir, sizeValue);
             if (directorySpan) {
                 directorySpan.textContent = displayDirectory;
                 directorySpan.setAttribute('title', displayDirectory);
                 directorySpan.setAttribute('data-directory', normalizedDir);
+                if (existingSizeAttr) {
+                    directorySpan.setAttribute('data-size', existingSizeAttr);
+                } else {
+                    directorySpan.removeAttribute('data-size');
+                }
+            }
+            if (existingSizeAttr) {
+                item.setAttribute('data-size', existingSizeAttr);
+            } else {
+                item.removeAttribute('data-size');
             }
 
             var files = state.pagination.allFiles || [];
-            var index = files.findIndex(function(file) { return file.url === oldUrl; });
+            var index = files.findIndex(function (file) { return file.url === oldUrl; });
             if (index !== -1) {
                 files[index] = Object.assign({}, files[index], {
                     url: newUrl,
                     name: newName,
                     thumbnail: result.thumbnail || files[index].thumbnail,
+                    size: files[index].size,
                     directory: normalizedDir,
                     id: result.id != null ? result.id : files[index].id
                 });
@@ -2103,7 +2313,7 @@
                 var meta = state.selectedMeta.get(oldUrl) || {};
                 if (result.id != null) {
                     meta.id = result.id;
-                } else if (active.objectId && !meta.id) {
+                } else if (active.objectId) {
                     meta.id = active.objectId;
                 }
                 state.selected.delete(oldUrl);
@@ -2115,24 +2325,33 @@
             this.active = null;
             selection.updateButton();
 
-            setTimeout(function() {
+            setTimeout(function () {
                 span.classList.remove('temf-rename-success');
             }, 1200);
         }
     };
 
     var ui = {
-        renderFiles: function(files) {
+        renderFiles: function (files) {
             var body = document.querySelector('#temf-modal .temf-body');
             if (!body) {
                 return;
             }
 
             var list = Array.isArray(files) ? files : [];
+            list = list.map(function (file) {
+                if (file && typeof file === 'object') {
+                    var resolvedSize = resolveFileSize(file);
+                    if (resolvedSize > 0) {
+                        file.size = resolvedSize;
+                    }
+                }
+                return file;
+            });
             var seenKeys = new Set();
             var uniqueFiles = [];
 
-            list.forEach(function(file) {
+            list.forEach(function (file) {
                 if (!file) return;
                 var key = file.url ? ('url:' + file.url) : (file.name ? ('name:' + file.name) : null);
                 if (!key) {
@@ -2155,10 +2374,12 @@
             var targetPath = state.currentPath ? normalizeDirectoryPath(state.currentPath).toLowerCase() : '';
             var shouldFilter = !!targetPath && activeStorage !== 'lsky';
 
-            var filteredFiles = shouldFilter ? uniqueFiles.filter(function(file) {
+            var filteredFiles = shouldFilter ? uniqueFiles.filter(function (file) {
                 var fileDir = extractFileDirectory(file);
                 var normalizedFileDir = normalizeDirectoryPath(fileDir).toLowerCase();
-                return normalizedFileDir === targetPath;
+                // 使用前缀匹配而不是精确匹配，以包含子目录的文件
+                // 例如：选择 2023/01 时，会显示 2023/01 和 2023/01/2 的文件
+                return normalizedFileDir === targetPath || normalizedFileDir.indexOf(targetPath + '/') === 0;
             }) : uniqueFiles;
 
             if (filteredFiles.length === 0) {
@@ -2167,40 +2388,40 @@
                 pagination.hide();
                 return;
             }
-            
+
             // 动态计算每页显示数量（确保在容器存在后计算）
             state.pagination.pageSize = calculatePageSize();
-            
+
             // 保存所有文件到状态
             state.pagination.allFiles = filteredFiles;
             state.pagination.totalItems = filteredFiles.length;
-            
+
             // 重置到第一页
             state.pagination.currentPage = 1;
-            
+
             // 渲染当前页
             this.renderCurrentPage();
         },
-        
-        renderCurrentPage: function() {
+
+        renderCurrentPage: function () {
             var body = document.querySelector('#temf-modal .temf-body');
             if (!body) return;
-            
+
             var files = state.pagination.allFiles;
             var currentPage = state.pagination.currentPage;
             var pageSize = state.pagination.pageSize;
-            
+
             if (!files || !files.length) return;
-            
+
             if (!pageSize || pageSize <= 0) {
                 pageSize = files.length;
             }
-            
+
             // 计算当前页的文件范围
             var startIndex = (currentPage - 1) * pageSize;
             var endIndex = Math.min(startIndex + pageSize, files.length);
             var pageFiles = files.slice(startIndex, endIndex);
-            
+
             // 清空并创建网格
             if (rename && typeof rename.cancel === 'function') {
                 rename.cancel(true);
@@ -2211,14 +2432,14 @@
             fragment.appendChild(grid);
             body.innerHTML = '';
             body.appendChild(fragment);
-            
+
             // 渲染当前页的文件
             var self = this;
             var htmlParts = [];
             for (var i = 0; i < pageFiles.length; i++) {
                 htmlParts.push(self.renderFileItem(pageFiles[i]));
             }
-            
+
             if (htmlParts.length) {
                 var div = document.createElement('div');
                 div.innerHTML = htmlParts.join('');
@@ -2226,50 +2447,53 @@
                     grid.appendChild(div.firstChild);
                 }
             }
-            
+
             selection.clear();
-            requestAnimationFrame(function() {
+            requestAnimationFrame(function () {
                 grid.classList.add('temf-grid-loaded');
                 // 初始化懒加载
                 initLazyLoading();
             });
-            
+
             // 更新分页控件
             pagination.update();
         },
-        
-        renderFileItem: function(item) {
+
+        renderFileItem: function (item) {
             var url = item.url || '';
             var thumbnail = this.getThumbnailUrl(item); // 智能获取缩略图URL
             var name = item.name || 'unknown';
             var directory = typeof item.directory === 'string' ? item.directory : '';
-            
+
             function escapeHtml(text) {
                 var div = document.createElement('div');
                 div.textContent = text;
                 return div.innerHTML;
             }
-            
+
             var safeUrl = escapeHtml(url);
             var safeThumbnail = escapeHtml(thumbnail);
             var safeNameFull = escapeHtml(name);
-            var normalizedDirectory = directory ? directory.replace(/^\/+|\/+$/g, '') : '';
+            var normalizedDirectory = directory ? directory.replace(/^\/+/g, '').replace(/\/+$/g, '') : '';
             var safeDirectoryValue = escapeHtml(normalizedDirectory);
             var displayName = safeNameFull;
             var lastDot = name.lastIndexOf('.');
             if (lastDot > 0) {
                 displayName = escapeHtml(name.slice(0, lastDot));
             }
-            
-            var directoryDisplay = normalizedDirectory ? '/' + normalizedDirectory : '/';
+
+            var sizeValue = resolveFileSize(item);
+            var sizeAttr = sizeValue > 0 ? String(sizeValue) : '';
+            var directoryDisplay = formatDirectoryLabel(normalizedDirectory, sizeValue);
             var safeDirectoryDisplay = escapeHtml(directoryDisplay);
+            var safeSizeAttr = escapeHtml(sizeAttr);
 
             // 获取 loading.gif 路径
             var loadingGif = this.getLoadingGifUrl();
             var safeLoader = escapeHtml(loadingGif);
-            
+
             // 优化图片加载：使用loading.gif作为占位图，通过Intersection Observer进行懒加载
-            return '<li class="temf-item" data-url="' + safeUrl + '" data-directory="' + safeDirectoryValue + '">' +
+            return '<li class="temf-item" data-url="' + safeUrl + '" data-directory="' + safeDirectoryValue + '" data-size="' + safeSizeAttr + '">' +
                 '<div class="temf-thumb">' +
                 '<input type="checkbox" class="temf-pick" value="' + safeUrl + '" data-meta-id="' + (item.id != null ? String(item.id).replace(/"/g, '&quot;') : '') + '">' +
                 '<img src="' + safeLoader + '" data-src="' + safeThumbnail + '" alt="' + safeNameFull + '" ' +
@@ -2279,7 +2503,7 @@
                 '</div>' +
                 '<div class="temf-meta">' +
                 '<span class="temf-name" data-full-name="' + safeNameFull + '" title="' + displayName + '">' + displayName + '</span>' +
-                '<span class="temf-directory" data-directory="' + safeDirectoryValue + '" title="' + safeDirectoryDisplay + '">' + safeDirectoryDisplay + '</span>' +
+                '<span class="temf-directory" data-directory="' + safeDirectoryValue + '" data-size="' + safeSizeAttr + '" title="' + safeDirectoryDisplay + '">' + safeDirectoryDisplay + '</span>' +
                 '<div class="temf-actions">' +
                 '<button type="button" class="btn btn-xs temf-action-btn" data-temf-insert data-url="' + safeUrl + '">插入</button>' +
                 '<button type="button" class="btn btn-xs temf-action-btn" data-temf-copy data-url="' + safeUrl + '">复制</button>' +
@@ -2287,11 +2511,11 @@
                 '</div>' +
                 '</li>';
         },
-        
+
         /**
          * 获取 loading.gif 的 URL
          */
-        getLoadingGifUrl: function() {
+        getLoadingGifUrl: function () {
             // 缓存 loading.gif URL
             if (!this._loadingGifUrl) {
                 var sec = byId('temediafolder');
@@ -2312,7 +2536,7 @@
                         }
                     }
                 }
-                
+
                 // 如果还是没找到，使用相对路径
                 if (!this._loadingGifUrl) {
                     this._loadingGifUrl = '../assets/loading.gif';
@@ -2320,8 +2544,8 @@
             }
             return this._loadingGifUrl;
         },
-        
-        getThumbnailUrl: function(item) {
+
+        getThumbnailUrl: function (item) {
             // 性能优化：缓存结果避免重复计算
             if (item._cachedThumbnail) {
                 return item._cachedThumbnail;
@@ -2329,16 +2553,16 @@
 
             var url = item.url || '';
             var thumbnail = item.thumbnail;
-            
+
             // 如果已经有缩略图URL，直接使用
             if (thumbnail && thumbnail !== url) {
                 item._cachedThumbnail = thumbnail;
                 return thumbnail;
             }
-            
+
             // 性能优化：缓存存储类型判断
             var currentSource = this._getCachedStorageType();
-            
+
             // 检查是否为图片文件
             if (this.isImageFile(item.name || '')) {
                 var result;
@@ -2347,28 +2571,28 @@
                     // 获取配置的缩略图尺寸
                     var thumbSize = TEMF_CONF.thumbSize || 120;
                     var thumbParam = 'thumbnail=' + thumbSize + 'x' + thumbSize;
-                    
+
                     if (url.indexOf('?') !== -1) {
                         result = url + '&' + thumbParam;
                     } else {
                         result = url + '?' + thumbParam;
                     }
-                    } else {
+                } else {
                     // 本地存储如果没有缩略图就使用原图
                     result = url;
                 }
-                
+
                 item._cachedThumbnail = result;
                 return result;
             }
-            
+
             // 非图片文件返回原URL
             item._cachedThumbnail = url;
-                        return url;
+            return url;
         },
 
         // 性能优化：缓存存储类型判断结果
-        _getCachedStorageType: function() {
+        _getCachedStorageType: function () {
             if (!this._cachedStorageType) {
                 var currentSource = TEMF_CONF.source;
                 if (currentSource === 'multi' && state.currentStorage) {
@@ -2380,37 +2604,37 @@
         },
 
         // 清除缓存（在模式切换时调用）
-        _clearCache: function() {
+        _clearCache: function () {
             this._cachedStorageType = null;
         },
-        
-        isImageFile: function(fileName) {
+
+        isImageFile: function (fileName) {
             // 性能优化：缓存扩展名检查
             if (!fileName) return false;
-            
+
             // 性能优化：使用静态哈希表而不是数组查找
             if (!this._imageExtensions) {
                 this._imageExtensions = {
-                    'jpg': true, 'jpeg': true, 'png': true, 
+                    'jpg': true, 'jpeg': true, 'png': true,
                     'gif': true, 'webp': true, 'bmp': true
                 };
             }
-            
+
             var lastDot = fileName.lastIndexOf('.');
             if (lastDot === -1) return false;
-            
+
             var extension = fileName.substring(lastDot + 1).toLowerCase();
             return !!this._imageExtensions[extension];
         },
-        
-        prependFile: function(fileItem) {
+
+        prependFile: function (fileItem) {
             // 检查文件是否已存在（避免重复显示）
             if (state.pagination.allFiles && state.pagination.allFiles.length > 0) {
-                var existingIndex = state.pagination.allFiles.findIndex(function(file) {
+                var existingIndex = state.pagination.allFiles.findIndex(function (file) {
                     // 通过 URL 或文件名判断是否为同一文件
                     return file.url === fileItem.url || file.name === fileItem.name;
                 });
-                
+
                 if (existingIndex !== -1) {
                     // 文件已存在，更新而不是添加
                     state.pagination.allFiles[existingIndex] = fileItem;
@@ -2424,7 +2648,7 @@
                 state.pagination.allFiles = [fileItem];
                 state.pagination.totalItems = 1;
             }
-            
+
             // 如果在第一页，需要重新渲染当前页来显示新文件
             if (state.pagination.currentPage === 1) {
                 this.renderCurrentPage();
@@ -2432,81 +2656,81 @@
                 // 不在第一页，只更新分页信息
                 pagination.update();
             }
-            
+
             selection.clear();
         }
     };
-    
+
     var selection = {
-        clear: function() {
+        clear: function () {
             state.selected.clear();
             state.selectedMeta.clear();
             this.updateButton();
         },
-        
-        add: function(url, meta) {
+
+        add: function (url, meta) {
             state.selected.add(url);
             state.selectedMeta.set(url, meta || {});
             this.updateButton();
         },
-        
-        remove: function(url) {
+
+        remove: function (url) {
             state.selected.delete(url);
             state.selectedMeta.delete(url);
             this.updateButton();
         },
-        
-        updateButton: function() {
+
+        updateButton: function () {
             var btn = byId("temf-insert-selected");
             if (!btn) return;
-            
+
             btn.disabled = state.selected.size === 0;
             toggleDeleteButtons(state.selected.size > 0);
         }
     };
-    
+
     var fileOps = {
-        insert: function(url) {
+        insert: function (url) {
             var name = url.split('/').pop().split('?')[0];
             var alt = decodeURIComponent(name).replace(/\.[a-z0-9]+$/i, '');
             var text = '![' + alt + '](' + url + ')';
-            
+
             insertAtCursor(getEditor(), text);
             modal.close();
         },
-        
-        insertSelected: function() {
+
+        insertSelected: function () {
             if (state.selected.size === 0) return;
-            
+
             var urls = Array.from(state.selected);
-            var block = '[photos]\n' + urls.map(function(url) {
+            var block = '[photos]\n' + urls.map(function (url) {
                 var name = url.split('/').pop().split('?')[0];
                 var alt = decodeURIComponent(name).replace(/\.[a-z0-9]+$/i, '');
                 return '![' + alt + '](' + url + ')';
             }).join('\n') + '\n[/photos]';
-            
+
             insertAtCursor(getEditor(), block);
             selection.clear();
             modal.close();
         },
-        
-        copy: function(url, button) {
+
+        copy: function (url, button) {
             if (button && button.hasAttribute('data-temf-delete')) {
                 deleteOps.start([url]);
                 return;
             }
 
-            var showCopied = function(btn) {
+            var showCopied = function (btn) {
                 try {
                     var originalText = btn.textContent;
                     btn.textContent = TEMF_CONF && TEMF_CONF.labels && TEMF_CONF.labels.copied ? TEMF_CONF.labels.copied : '已复制';
-                    setTimeout(function() {
+                    setTimeout(function () {
                         btn.textContent = originalText;
                     }, 1200);
-                } catch (e) {}
+                } catch (e) { }
             };
 
-            var fallbackCopy = function() {
+            var fallbackCopy = function () {
                 try {
                     var temp = document.createElement('input');
                     temp.style.position = 'fixed';
@@ -2517,19 +2741,19 @@
                     document.execCommand('copy');
                     document.body.removeChild(temp);
                     showCopied(button);
-                } catch (err) {}
+                } catch (err) { }
             };
 
             if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(url).then(function() {
+                navigator.clipboard.writeText(url).then(function () {
                     showCopied(button);
                 }).catch(fallbackCopy);
             } else {
                 fallbackCopy();
             }
         },
-        
-        upload: function() {
+
+        upload: function () {
             // 多模式下必须先选择目标存储
             if (TEMF_CONF && TEMF_CONF.source === 'multi') {
                 if (!state.currentStorage) {
@@ -2546,44 +2770,46 @@
             }
 
             var fileInput = document.createElement('input');
-                fileInput.type = 'file';
-                fileInput.id = 'temf-hidden-file';
-                fileInput.style.display = 'none';
-                fileInput.accept = 'image/*';
-                fileInput.multiple = true; // 支持多选
-                document.body.appendChild(fileInput);
-                
-                fileInput.addEventListener('change', function() {
-                    if (this.files && this.files.length > 0) {
-                        upload.handleMultipleFiles(Array.from(this.files));
-                    } else {
-                        console.warn('[TEMF] 未选择文件');
-                    }
-                });
-            
+            fileInput.type = 'file';
+            fileInput.id = 'temf-hidden-file';
+            fileInput.style.display = 'none';
+            fileInput.accept = 'image/*';
+            fileInput.multiple = true; // 支持多选
+            document.body.appendChild(fileInput);
+
+            fileInput.addEventListener('change', function () {
+                if (this.files && this.files.length > 0) {
+                    upload.handleMultipleFiles(Array.from(this.files));
+                } else {
+                    console.warn('[TEMF] 未选择文件');
+                }
+            });
+
             fileInput.click();
         }
     };
-    
+
     var upload = {
         queue: [],
         currentIndex: 0,
         totalFiles: 0,
-        
-        handleFile: function(file) {
+        currentXhr: null,
+        isCancelled: false,
+
+        handleFile: function (file) {
             if (!this.validateMultiModeState()) {
                 // invalid multi-mode
                 return;
             }
-            
+
             var currentSource = this.getCurrentStorageType();
-            
+
             if (currentSource === 'multi') {
                 this.uploadToMulti(file, false);
             } else if (currentSource === 'cos') {
-                    if (TEMF_CONF.source === 'multi') {
+                if (TEMF_CONF.source === 'multi') {
                     this.uploadToMulti(file, false);
-                    } else {
+                } else {
                     this.uploadToCos(file, false);
                 }
             } else if (currentSource === 'oss') {
@@ -2609,14 +2835,17 @@
                     this.uploadToMulti(file, false);
                 } else {
                     this.uploadLocal(file, false);
-                    }
+                }
             }
         },
-        
-        handleMultipleFiles: function(files) {
+
+        handleMultipleFiles: function (files) {
             this.queue = files;
             this.currentIndex = 0;
             this.totalFiles = files.length;
+            this.isCancelled = false;
+            this.currentXhr = null;
+            this.uploadFailedCount = 0;  // 重置失败计数
 
             if (!this.totalFiles) {
                 return;
@@ -2627,29 +2856,58 @@
 
             progress.show(firstName, this.totalFiles);
             progress.update(0, this.totalFiles, firstName);
+            progress.setCancelHandler(this.cancel.bind(this));
 
             this.uploadNext();
         },
-        
-        uploadNext: function() {
+
+        cancel: function () {
+            var xhr = this.currentXhr;
+            if (xhr) {
+                try {
+                    xhr.abort();
+                } catch (e) {
+                    console.warn('[TEMF] 取消上传失败', e);
+                }
+            }
+            this.isCancelled = true;
+            this.queue = [];
+            this.currentXhr = null;
+            progress.setStatusMessage('上传已取消', { variant: 'warning' });
+            progress.setCancelHandler(null);
+            setTimeout(function () {
+                progress.hide();
+            }, 500);
+        },
+
+        finishAfterCancel: function () {
+            progress.hide();
+        },
+
+        uploadNext: function () {
+            if (this.isCancelled) {
+                this.finishAfterCancel();
+                return;
+            }
+
             if (this.currentIndex >= this.queue.length) {
                 progress.finish();
                 return;
             }
-            
+
             if (!this.validateMultiModeState()) {
                 console.error('[TEMF] 多模式状态验证失败');
                 progress.hide();
                 return;
             }
-            
+
             var file = this.queue[this.currentIndex];
-            
+
             progress.update(this.currentIndex, this.totalFiles, file.name);
-            
+
             // 优化多模式下的上传逻辑：根据当前激活的存储类型选择上传方法
             var currentSource = this.getCurrentStorageType();
-            
+
             if (currentSource === 'multi') {
                 this.uploadToMulti(file, true);
             } else if (currentSource === 'cos') {
@@ -2682,119 +2940,123 @@
                 }
             } else {
                 // 本地存储或默认情况
-                    if (TEMF_CONF.source === 'multi') {
-                        this.uploadToMulti(file, true);
-                    } else {
-                        this.uploadLocal(file, true);
-                    }
+                if (TEMF_CONF.source === 'multi') {
+                    this.uploadToMulti(file, true);
+                } else {
+                    this.uploadLocal(file, true);
+                }
             }
         },
-        
-        getCurrentStorageType: function() {
+
+        getCurrentStorageType: function () {
             // 多模式下返回当前选中的存储类型，单模式下返回配置的存储类型
             if (TEMF_CONF.source === 'multi' && state.currentStorage) {
                 return state.currentStorage;
             }
             return TEMF_CONF.source;
         },
-        
-        validateMultiModeState: function() {
+
+        validateMultiModeState: function () {
             // 验证多模式状态是否有效
             if (TEMF_CONF.source === 'multi') {
                 if (!state.currentStorage) {
                     // multi no storage
                     return false;
                 }
-                
+
                 if (!state.availableStorages || state.availableStorages.length === 0) {
                     // multi no storages
                     return false;
                 }
-                
+
                 // 检查当前存储是否在可用列表中
-                var isValidStorage = state.availableStorages.some(function(storage) {
+                var isValidStorage = state.availableStorages.some(function (storage) {
                     return storage.key === state.currentStorage;
                 });
-                
+
                 if (!isValidStorage) {
                     // multi storage invalid
                     return false;
                 }
             }
-            
+
             return true;
         },
-        
-        onUploadComplete: function(success, fileName) {
+
+        onUploadComplete: function (success, fileName) {
+            this.currentXhr = null;
             this.currentIndex++;
-            
-            if (success) {
+
+            // 记录上传失败次数
+            if (!success) {
+                this.uploadFailedCount = (this.uploadFailedCount || 0) + 1;
             } else {
+                state.uploadErrors = 0;
             }
-            
+
             var self = this;
-            setTimeout(function() {
+            setTimeout(function () {
                 self.uploadNext();
             }, 300);
         },
-        
+
         /**
          * 通用云存储上传方法 - 合并COS/OSS/多模式上传逻辑
          */
-        uploadToCloudStorage: function(file, isBatch, storageType, attrName) {
+        uploadToCloudStorage: function (file, isBatch, storageType, attrName) {
             var self = this;
             var sec = byId('temediafolder');
-            
+
             var uploadUrl = sec ? sec.getAttribute(attrName) : null;
-            
+
             if (!uploadUrl) {
                 console.error('[TEMF] 无法获取上传URL，属性名:', attrName);
                 alert('上传失败: 无法获取上传URL');
                 if (isBatch) self.onUploadComplete(false, file.name);
                 return;
             }
-            
+
             var formData = new FormData();
             formData.append('file', file);
-            
+
             // 多模式需要额外参数
             if (storageType === 'multi') {
                 formData.append('storage_type', state.currentStorage);
             }
-            
+
             var path = this.getCurrentPath();
             formData.append('temf_path', path);
-            
+
             var xhr = new XMLHttpRequest();
             xhr.timeout = 120000;
-            
-            xhr.upload.addEventListener('progress', function(e) {
+
+            xhr.upload.addEventListener('progress', function (e) {
                 if (e.lengthComputable) {
                     var percent = (e.loaded / e.total) * 100;
                     progress.updateFileProgress(percent);
                 }
             });
-            
-            xhr.addEventListener('load', function() {
+
+            xhr.addEventListener('load', function () {
                 self.handleUploadResponse(xhr, file, isBatch);
             });
-            
-            xhr.addEventListener('error', function() {
+
+            xhr.addEventListener('error', function () {
                 self.handleUploadError('网络错误', file, isBatch);
             });
-            
-            xhr.addEventListener('timeout', function() {
+
+            xhr.addEventListener('timeout', function () {
                 self.handleUploadError('上传超时', file, isBatch);
             });
-            
+
             xhr.open('POST', uploadUrl);
             xhr.send(formData);
         },
-        
+
         /**
          * 处理上传响应
          */
-        handleUploadResponse: function(xhr, file, isBatch) {
+        handleUploadResponse: function (xhr, file, isBatch) {
             try {
                 // 检查 HTTP 状态码
                 if (xhr.status < 200 || xhr.status >= 300) {
@@ -2813,24 +3075,24 @@
                     this.handleUploadError(errorMsg, file, isBatch);
                     return;
                 }
-                
+
                 var result = JSON.parse(xhr.responseText);
                 var success = result.ok && result.url;
-                
+
                 if (success) {
                     progress.updateFileProgress(100);
-                    
+
                     var newFile = {
                         name: result.name || file.name,
                         url: result.url,
                         thumbnail: result.thumbnail
                     };
-                    
+
                     ui.prependFile(newFile);
-                    
+
                     // 非批量模式，上传成功后隐藏进度条
                     if (!isBatch) {
-                        setTimeout(function() {
+                        setTimeout(function () {
                             progress.hide();
                         }, 1000);
                     }
@@ -2838,7 +3100,7 @@
                     var msg = (result && (result.msg || result.message)) ? (result.msg || result.message) : '上传失败';
                     this.handleUploadError(msg, file, isBatch);
                 }
-                
+
                 if (isBatch) {
                     this.onUploadComplete(success, file.name);
                 }
@@ -2846,45 +3108,44 @@
                 this.handleUploadError('上传失败: ' + e.message, file, isBatch);
             }
         },
-        
+
         /**
          * 处理上传错误
          */
-        handleUploadError: function(msg, file, isBatch) {
+        handleUploadError: function (msg, file, isBatch) {
             console.error('[Upload Error]', msg, file.name);
-            
-            // 显示错误信息
-            if (!isBatch) {
-                alert('上传失败: ' + msg);
+
+            var message = msg || '未知错误';
+
+            if (progress.setError) {
+                progress.setError(message);
             }
-            
-            if (progress.setError) progress.setError(msg);
-            
+
             if (!isBatch) {
-                // 单文件上传时，短暂展示错误后隐藏
-                setTimeout(function() {
+                try {
+                    alert('上传失败: ' + message);
+                } catch (e) { }
+                setTimeout(function () {
                     progress.hide();
                 }, 2000);
-            }
-            
-            if (isBatch) {
+            } else {
                 this.onUploadComplete(false, file.name);
             }
         },
-        
-        uploadToCos: function(file, isBatch) {
+
+        uploadToCos: function (file, isBatch) {
             this.uploadToCloudStorage(file, isBatch, 'cos', 'data-cos-upload');
         },
-        
-        uploadToOss: function(file, isBatch) {
+
+        uploadToOss: function (file, isBatch) {
             this.uploadToCloudStorage(file, isBatch, 'oss', 'data-oss-upload');
         },
-        
-        uploadToUpyun: function(file, isBatch) {
+
+        uploadToUpyun: function (file, isBatch) {
             this.uploadToCloudStorage(file, isBatch, 'upyun', 'data-upyun-upload');
         },
-        
-        uploadToLsky: function(file, isBatch) {
+
+        uploadToLsky: function (file, isBatch) {
             var self = this;
             var sec = byId('temediafolder');
             var uploadUrl = sec ? sec.getAttribute('data-lsky-upload') : null;
@@ -2892,24 +3153,24 @@
                 if (isBatch) self.onUploadComplete(false, file.name);
                 return;
             }
-            
+
             var path = this.getCurrentPath();
             var formData = new FormData();
             formData.append('file', file);
             formData.append('temf_path', path);
-            
+
             var xhr = new XMLHttpRequest();
             xhr.timeout = 120000;
             xhr.timeout = 120000;
-            
-            xhr.upload.addEventListener('progress', function(e) {
+
+            xhr.upload.addEventListener('progress', function (e) {
                 if (e.lengthComputable) {
                     var percent = (e.loaded / e.total) * 100;
                     progress.updateFileProgress(percent);
                 }
             });
-            
-            xhr.addEventListener('load', function() {
+
+            xhr.addEventListener('load', function () {
                 var text = (xhr && typeof xhr.responseText === 'string') ? xhr.responseText : '';
                 var result = null;
                 var success = false;
@@ -2925,37 +3186,37 @@
                     // 空响应或非JSON响应
                     result = { ok: false, msg: (text ? '非JSON响应' : '空响应') };
                 }
-                    
-                    if (success) {
-                        progress.updateFileProgress(100);
-                        
-                        var newFile = {
-                            name: result.name || file.name,
-                            url: result.url
-                        };
-                        ui.prependFile(newFile);
-                    } else {
+
+                if (success) {
+                    progress.updateFileProgress(100);
+
+                    var newFile = {
+                        name: result.name || file.name,
+                        url: result.url
+                    };
+                    ui.prependFile(newFile);
+                } else {
                     var msg = (result && (result.msg || result.message)) ? (result.msg || result.message) : '上传失败';
                     // uploadToLsky error
                     progress.setError && progress.setError(msg);
                     progress.hide();
-                    }
-                    
-                    if (isBatch) {
-                        self.onUploadComplete(success, file.name);
-                    }
+                }
+
+                if (isBatch) {
+                    self.onUploadComplete(success, file.name);
+                }
             });
-            
-            xhr.addEventListener('error', function() {
+
+            xhr.addEventListener('error', function () {
                 // uploadToLsky network error
                 progress.setError && progress.setError('网络错误');
                 progress.hide();
-                    if (isBatch) {
-                        self.onUploadComplete(false, file.name);
-                    }
+                if (isBatch) {
+                    self.onUploadComplete(false, file.name);
+                }
             });
-            
-            xhr.addEventListener('timeout', function() {
+
+            xhr.addEventListener('timeout', function () {
                 // uploadToLsky timeout
                 progress.setError && progress.setError('上传超时');
                 progress.hide();
@@ -2963,178 +3224,222 @@
                     self.onUploadComplete(false, file.name);
                 }
             });
-            
-            xhr.addEventListener('error', function() {
+
+            xhr.addEventListener('error', function () {
                 if (isBatch) {
                     self.onUploadComplete(false, file.name);
                 }
             });
-            xhr.addEventListener('timeout', function() {
+            xhr.addEventListener('timeout', function () {
                 if (isBatch) {
                     self.onUploadComplete(false, file.name);
                 }
             });
-            
+
             xhr.open('POST', uploadUrl);
             xhr.send(formData);
         },
-        
-        uploadToMulti: function(file, isBatch) {
+
+        uploadToMulti: function (file, isBatch) {
             if (!state.currentStorage) {
                 if (isBatch) this.onUploadComplete(false, file.name);
                 return;
             }
             this.uploadToCloudStorage(file, isBatch, 'multi', 'data-multi-upload');
         },
-        
-        uploadLocal: function(file, isBatch) {
+
+        uploadLocal: function (file, isBatch) {
             var self = this;
             var sec = byId('temediafolder');
             var uploadUrl = sec ? sec.getAttribute('data-local-upload') : null;
-            
+
             if (!uploadUrl) {
                 if (isBatch) self.onUploadComplete(false, file.name);
                 return;
             }
-            
+
             var formData = new FormData();
             formData.append('file', file);
-            
+
+            // 获取当前选择的年月，作为上传目标目录
+            var ySel = byId('temf-year');
+            var mSel = byId('temf-month');
+            if (ySel && ySel.value && mSel && mSel.value) {
+                // 确保月份是零填充的格式（如 "01" 而不是 "1"）
+                var month = mSel.value;
+                var paddedMonth = month.length === 1 ? '0' + month : month;
+
+                formData.append('temf_year', ySel.value);
+                formData.append('temf_month', paddedMonth);
+            }
+
             var xhr = new XMLHttpRequest();
             xhr.timeout = 120000;
-            
-            xhr.upload.addEventListener('progress', function(e) {
+
+            xhr.upload.addEventListener('progress', function (e) {
                 if (e.lengthComputable) {
                     var percent = (e.loaded / e.total) * 100;
                     progress.updateFileProgress(percent);
                 }
             });
-            
-            xhr.addEventListener('load', function() {
+
+            xhr.addEventListener('load', function () {
                 try {
                     var result = JSON.parse(xhr.responseText);
-                var success = result.ok && result.url;
-                
-                if (success) {
-                    progress.updateFileProgress(100);
-                    
-                    var now = new Date();
-                    var year = now.getFullYear().toString();
-                    var month = (now.getMonth() + 1).toString().padStart(2, '0');
-                    
-                    TEMF_CONF.data = TEMF_CONF.data || {};
-                    TEMF_CONF.data[year] = TEMF_CONF.data[year] || {};
-                    TEMF_CONF.data[year][month] = TEMF_CONF.data[year][month] || [];
-                    
-                    var newItem = {
-                        url: result.url,
-                        name: result.name,
-                        mtime: Math.floor(Date.now() / 1000)
-                    };
-                    
-                    var list = TEMF_CONF.data[year][month];
-                    list = [newItem].concat(list.filter(function(item) {
-                        return item.url !== result.url;
-                    }));
-                    TEMF_CONF.data[year][month] = list;
-                    
-                    var modalEl = document.getElementById('temf-modal');
-                    if (modalEl && modalEl.classList.contains('open')) {
-                        var ySel = byId('temf-year');
-                        var mSel = byId('temf-month');
-                        
-                        if (ySel && mSel) {
-                            // 如果选择器未初始化，构建它们
-                            if (!ySel.value || !mSel.value) {
-                                local.buildYearMonth();
-                                ySel.value = year;
-                                local.buildMonths(year);
-                                mSel.value = month;
-                            }
-                            
-                            // 检查是否在当前显示的年月
-                            if (ySel.value === year && mSel.value === month) {
-                                // 只添加新图片到顶部，而不是重新渲染所有
-                                ui.prependFile(newItem);
+                    var success = result.ok && result.url;
+
+                    if (success) {
+                        progress.updateFileProgress(100);
+
+                        // 使用服务器返回的实际年月，或者当前选择的年月
+                        var year = result.year;
+                        var month = result.month;
+
+                        // 如果服务器没有返回，则使用当前选择的年月
+                        if (!year || !month) {
+                            var ySel = byId('temf-year');
+                            var mSel = byId('temf-month');
+                            if (ySel && ySel.value && mSel && mSel.value) {
+                                year = ySel.value;
+                                // 确保月份是零填充格式
+                                var monthValue = mSel.value;
+                                month = monthValue.length === 1 ? '0' + monthValue : monthValue;
                             } else {
-                                // 如果不是当前年月，更新选择器并重新渲染
-                                ySel.value = year;
-                                local.buildMonths(year);
-                                mSel.value = month;
-                                local.renderCurrentMonth();
+                                var now = new Date();
+                                year = now.getFullYear().toString();
+                                month = (now.getMonth() + 1).toString().padStart(2, '0');
+                            }
+                        }
+
+                        TEMF_CONF.data = TEMF_CONF.data || {};
+                        TEMF_CONF.data[year] = TEMF_CONF.data[year] || {};
+                        TEMF_CONF.data[year][month] = TEMF_CONF.data[year][month] || [];
+
+                        var newItem = {
+                            url: result.url,
+                            name: result.name,
+                            mtime: Math.floor(Date.now() / 1000)
+                        };
+
+                        var list = TEMF_CONF.data[year][month];
+                        list = [newItem].concat(list.filter(function (item) {
+                            return item.url !== result.url;
+                        }));
+                        TEMF_CONF.data[year][month] = list;
+
+                        var modalEl = document.getElementById('temf-modal');
+                        if (modalEl && modalEl.classList.contains('open')) {
+                            var ySel = byId('temf-year');
+                            var mSel = byId('temf-month');
+
+                            if (ySel && mSel) {
+                                // 如果选择器未初始化，构建它们
+                                if (!ySel.value || !mSel.value) {
+                                    local.buildYearMonth();
+                                    ySel.value = year;
+                                    local.buildMonths(year);
+                                    mSel.value = month;
+                                }
+
+                                // 检查是否在当前显示的年月
+                                if (ySel.value === year && mSel.value === month) {
+                                    // 只添加新图片到顶部，而不是重新渲染所有
+                                    ui.prependFile(newItem);
+                                } else {
+                                    // 如果不是当前年月，更新选择器并重新渲染
+                                    ySel.value = year;
+                                    local.buildMonths(year);
+                                    mSel.value = month;
+                                    local.renderCurrentMonth();
+                                }
+                            }
+                        }
+                    } else {
+                        var msg = (result && (result.msg || result.message)) ? (result.msg || result.message) : '上传失败';
+                        if (!isBatch) {
+                            alert('上传失败: ' + msg);
+                        } else {
+                            // 批量上传失败时也显示错误信息
+                            if (progress.setError) {
+                                progress.setError(msg);
                             }
                         }
                     }
-                } else {
-                    if (!isBatch) {
-                        alert('上传失败: ' + (result.msg || '未知错误'));
+
+                    if (isBatch) {
+                        self.onUploadComplete(success, file.name);
                     }
-                }
-                
-                if (isBatch) {
-                    self.onUploadComplete(success, file.name);
-                }
                 } catch (e) {
                     if (isBatch) {
                         self.onUploadComplete(false, file.name);
                     }
                 }
             });
-            
-            xhr.addEventListener('error', function() {
+
+            xhr.addEventListener('error', function () {
                 if (isBatch) {
+                    if (progress.setError) {
+                        progress.setError('网络错误');
+                    }
                     self.onUploadComplete(false, file.name);
+                } else {
+                    alert('上传失败: 网络错误');
                 }
             });
-            xhr.addEventListener('timeout', function() {
+            xhr.addEventListener('timeout', function () {
                 if (isBatch) {
+                    if (progress.setError) {
+                        progress.setError('上传超时');
+                    }
                     self.onUploadComplete(false, file.name);
+                } else {
+                    alert('上传失败: 上传超时');
                 }
             });
-            
+
             xhr.open('POST', uploadUrl);
             xhr.send(formData);
         },
-        
-        getCurrentPath: function() {
+
+        getCurrentPath: function () {
             var dir = byId('temf-dir');
             var subdir = byId('temf-subdir');
-            
+
             if (!dir || !subdir) return '';
-            
+
             var p1 = dir.value || '';
             var p2 = subdir.value || '';
-            
+
             return p2 ? (p1 ? p1 + '/' + p2 : p2) : p1;
         }
     };
-    
+
     /**
      * 分页控制器
      */
     var pagination = {
         element: null,
         scrollListener: null,
-        
-        show: function() {
+
+        show: function () {
             if (!this.element) {
                 this.create();
             }
             this.element.style.display = 'flex';
         },
-        
-        hide: function() {
+
+        hide: function () {
             if (this.element) {
                 this.element.style.display = 'none';
             }
             this.removeScrollListener();
         },
-        
-        
+
+
         /**
          * 移除滚动监听
          */
-        removeScrollListener: function() {
+        removeScrollListener: function () {
             if (this.scrollListener) {
                 var body = document.querySelector('#temf-modal .temf-body');
                 if (body) {
@@ -3143,61 +3448,61 @@
                 this.scrollListener = null;
             }
         },
-        
-        update: function() {
+
+        update: function () {
             if (!this.element) {
                 this.create();
                 if (!this.element) {
                     return;
                 }
             }
-            
+
             var currentPage = state.pagination.currentPage;
             var totalItems = state.pagination.totalItems;
             var pageSize = state.pagination.pageSize;
-            
+
             if (!pageSize || pageSize <= 0) {
                 return;
             }
-            
+
             var totalPages = Math.ceil(totalItems / pageSize);
-            
+
             if (totalPages <= 1) {
                 this.hide();
                 return;
             }
-            
+
             // 直接显示分页控件（不使用滚动显示模式）
             this.show();
-            
+
             var prevBtn = this.element.querySelector('.temf-page-prev');
             var nextBtn = this.element.querySelector('.temf-page-next');
             var info = this.element.querySelector('.temf-page-info');
-            
+
             if (prevBtn) {
                 prevBtn.disabled = currentPage <= 1;
             }
-            
+
             if (nextBtn) {
                 nextBtn.disabled = currentPage >= totalPages;
             }
-            
+
             if (info) {
                 var start = (currentPage - 1) * pageSize + 1;
                 var end = Math.min(currentPage * pageSize, totalItems);
                 info.textContent = start + '-' + end + ' / ' + totalItems;
             }
         },
-        
-        prevPage: function() {
+
+        prevPage: function () {
             if (state.pagination.currentPage > 1) {
                 state.pagination.currentPage--;
                 ui.renderCurrentPage();
                 this.scrollToTop();
             }
         },
-        
-        nextPage: function() {
+
+        nextPage: function () {
             var totalPages = Math.ceil(state.pagination.totalItems / state.pagination.pageSize);
             if (state.pagination.currentPage < totalPages) {
                 state.pagination.currentPage++;
@@ -3205,61 +3510,63 @@
                 this.scrollToTop();
             }
         },
-        
-        scrollToTop: function() {
+
+        scrollToTop: function () {
             var body = document.querySelector('#temf-modal .temf-body');
             if (body) {
                 body.scrollTop = 0;
             }
         },
-        
-        create: function() {
+
+        create: function () {
             this.element = document.createElement('div');
             this.element.className = 'temf-pagination';
             this.element.style.display = 'none'; // 初始隐藏
-            this.element.innerHTML = 
+            this.element.innerHTML =
                 '<button type="button" class="btn btn-xs temf-page-prev">上一页</button>' +
                 '<span class="temf-page-info">1-50 / 100</span>' +
                 '<button type="button" class="btn btn-xs temf-page-next">下一页</button>';
-            
+
             // 插入到 .temf-dialog 中，作为 .temf-body 的兄弟元素
             var dialog = document.querySelector('#temf-modal .temf-dialog');
             if (dialog) {
                 dialog.appendChild(this.element);
             }
-            
+
             // 绑定事件
             var self = this;
             var prevBtn = this.element.querySelector('.temf-page-prev');
             var nextBtn = this.element.querySelector('.temf-page-next');
-            
+
             if (prevBtn) {
-                prevBtn.addEventListener('click', function() {
+                prevBtn.addEventListener('click', function () {
                     self.prevPage();
                 });
             }
-            
+
             if (nextBtn) {
-                nextBtn.addEventListener('click', function() {
+                nextBtn.addEventListener('click', function () {
                     self.nextPage();
                 });
             }
         }
     };
-    
+
     // 暴露到全局作用域供调试使用
     window.TEMF_PAGINATION = pagination;
-    
+
     var progress = {
         overlay: null,
         titleEl: null,
         statusEl: null,
         barEl: null,
         cardEl: null,
+        closeBtn: null,
+        cancelHandler: null,
         currentFileIndex: 0,
         totalFiles: 0,
 
-        ensureCreated: function() {
+        ensureCreated: function () {
             var dialog = document.querySelector('#temf-modal .temf-dialog');
             if (!dialog) return;
 
@@ -3267,11 +3574,15 @@
                 if (!this.overlay.isConnected) {
                     dialog.appendChild(this.overlay);
                 }
+
                 if (!this.titleEl || !this.statusEl || !this.barEl) {
                     this.titleEl = this.overlay.querySelector('.temf-progress-title');
                     this.statusEl = this.overlay.querySelector('.temf-progress-status');
                     this.barEl = this.overlay.querySelector('.temf-progress-bar');
                     this.cardEl = this.overlay.querySelector('.temf-progress-card');
+                    this.closeBtn = this.overlay.querySelector('.temf-progress-close');
+                    this.bindClose();
+                    this.updateCancelButton();
                 }
                 return;
             }
@@ -3280,9 +3591,10 @@
             overlay.className = 'temf-progress-overlay';
             overlay.innerHTML = '' +
                 '<div class="temf-progress-card">' +
-                    '<div class="temf-progress-title">上传文件</div>' +
-                    '<div class="temf-progress-bar-track"><div class="temf-progress-bar"></div></div>' +
-                    '<div class="temf-progress-status">上传中... 0% (0/0)</div>' +
+                '<button type="button" class="temf-progress-close" aria-label="取消上传">×</button>' +
+                '<div class="temf-progress-title">上传文件</div>' +
+                '<div class="temf-progress-bar-track"><div class="temf-progress-bar"></div></div>' +
+                '<div class="temf-progress-status">上传中... 0% (0/0)</div>' +
                 '</div>';
 
             dialog.appendChild(overlay);
@@ -3292,9 +3604,67 @@
             this.statusEl = overlay.querySelector('.temf-progress-status');
             this.barEl = overlay.querySelector('.temf-progress-bar');
             this.cardEl = overlay.querySelector('.temf-progress-card');
+            this.closeBtn = overlay.querySelector('.temf-progress-close');
+            this.bindClose();
+            this.updateCancelButton();
         },
 
-        show: function(initialTitle, totalFiles) {
+        bindClose: function () {
+            var self = this;
+            if (this.closeBtn) {
+                this.closeBtn.addEventListener('click', function (ev) {
+                    ev.preventDefault();
+                    if (typeof self.cancelHandler === 'function') {
+                        self.cancelHandler();
+                    }
+                });
+            }
+        },
+
+        setCancelHandler: function (handler) {
+            this.cancelHandler = typeof handler === 'function' ? handler : null;
+            this.updateCancelButton();
+        },
+
+        updateCancelButton: function () {
+            if (!this.closeBtn) {
+                return;
+            }
+            if (this.cancelHandler) {
+                this.closeBtn.style.display = '';
+                this.closeBtn.disabled = false;
+            } else {
+                this.closeBtn.style.display = 'none';
+                this.closeBtn.disabled = true;
+            }
+        },
+
+        setStatusMessage: function (message, options) {
+            this.ensureCreated();
+            if (!this.overlay || !this.statusEl) return;
+
+            var opts = options || {};
+            var variant = opts.variant || 'info';
+
+            this.statusEl.textContent = message || '';
+
+            this.statusEl.classList.remove('error', 'success', 'warning');
+            if (variant === 'error') {
+                this.statusEl.classList.add('error');
+                this.overlay.classList.add('temf-progress-error');
+                if (this.cardEl) this.cardEl.classList.add('temf-progress-error');
+            } else {
+                if (variant === 'success') {
+                    this.statusEl.classList.add('success');
+                } else if (variant === 'warning') {
+                    this.statusEl.classList.add('warning');
+                }
+                this.overlay.classList.remove('temf-progress-error');
+                if (this.cardEl) this.cardEl.classList.remove('temf-progress-error');
+            }
+        },
+
+        show: function (initialTitle, totalFiles) {
             this.ensureCreated();
             if (!this.overlay) return;
 
@@ -3303,6 +3673,7 @@
             if (this.cardEl) {
                 this.cardEl.classList.remove('temf-progress-error');
             }
+            this.setCancelHandler(null);
 
             var titleText = initialTitle || '上传文件';
             if (this.titleEl) {
@@ -3312,29 +3683,29 @@
             if (this.barEl) {
                 this.barEl.style.width = '0%';
             }
-            if (this.statusEl) {
-                var total = Number.isFinite(totalFiles) && totalFiles > 0 ? Math.max(0, totalFiles) : 0;
-                var suffix = total ? ' (0/' + total + ')' : '';
-                this.statusEl.textContent = '上传中... 0%' + suffix;
-                this.statusEl.classList.remove('error');
-            }
+            var total = Number.isFinite(totalFiles) && totalFiles > 0 ? Math.max(0, totalFiles) : 0;
+            var suffix = total ? ' (0/' + total + ')' : '';
+            this.setStatusMessage('上传中... 0%' + suffix, { variant: 'info' });
             this.currentFileIndex = 0;
             this.totalFiles = Number.isFinite(totalFiles) && totalFiles > 0 ? totalFiles : 0;
         },
 
-        hide: function() {
+        hide: function () {
             if (this.overlay) {
                 this.overlay.style.display = 'none';
                 if (this.statusEl) {
                     this.statusEl.classList.remove('error');
+                    this.statusEl.classList.remove('success');
+                    this.statusEl.classList.remove('warning');
                 }
                 if (this.cardEl) {
                     this.cardEl.classList.remove('temf-progress-error');
                 }
+                this.setCancelHandler(null);
             }
         },
 
-        update: function(current, total, fileName) {
+        update: function (current, total, fileName) {
             this.ensureCreated();
             if (!this.overlay) return;
 
@@ -3345,7 +3716,6 @@
             if (typeof total === 'number' && total >= 0) {
                 this.totalFiles = total;
             }
-
             if (typeof current === 'number') {
                 if (this.totalFiles > 0) {
                     this.currentFileIndex = Math.min(current + 1, this.totalFiles);
@@ -3359,7 +3729,7 @@
             this.updateFileProgress(0);
         },
 
-        updateFileProgress: function(percent) {
+        updateFileProgress: function (percent) {
             if (!this.overlay) return;
 
             percent = Math.max(0, Math.min(100, Number.isFinite(percent) ? percent : 0));
@@ -3367,30 +3737,19 @@
                 this.barEl.style.width = percent + '%';
             }
 
-            if (this.statusEl) {
-                var displayTotal = this.totalFiles || 0;
-                var displayCurrent = displayTotal ? Math.min(Math.max(this.currentFileIndex, 1), displayTotal) : 0;
-                var suffix = displayTotal ? ' (' + displayCurrent + '/' + displayTotal + ')' : '';
-                this.statusEl.textContent = '上传中... ' + Math.round(percent) + '%' + suffix;
-                this.statusEl.classList.remove('error');
-            }
+            var displayTotal = this.totalFiles || 0;
+            var displayCurrent = displayTotal ? Math.min(Math.max(this.currentFileIndex, 1), displayTotal) : 0;
+            var suffix = displayTotal ? ' (' + displayCurrent + '/' + displayTotal + ')' : '';
+            this.setStatusMessage('上传中... ' + Math.round(percent) + '%' + suffix, { variant: 'info' });
         },
 
-        setError: function(msg) {
-            if (!this.overlay) return;
-
-            var card = this.overlay.querySelector('.temf-progress-card');
-            if (card) {
-                card.classList.add('temf-progress-error');
-            }
-
-            if (this.statusEl) {
-                this.statusEl.textContent = '上传失败: ' + msg;
-                this.statusEl.classList.add('error');
-            }
+        setError: function (msg) {
+            var message = msg || '上传失败';
+            this.setStatusMessage(message, { variant: 'error' });
+            this.setCancelHandler(this.hide.bind(this));
         },
 
-        finish: function() {
+        finish: function () {
             this.ensureCreated();
             if (!this.overlay) return;
 
@@ -3402,37 +3761,44 @@
                 this.barEl.style.width = '100%';
             }
 
+            // 检查是否有上传失败的文件
+            var hasErrors = fileOps.uploadFailedCount > 0;
             var isError = this.statusEl && this.statusEl.classList.contains('error');
+
             if (this.statusEl && !isError) {
                 var total = this.totalFiles || 0;
                 var suffix = total ? ' (' + total + '/' + total + ')' : '';
-                this.statusEl.textContent = '上传完成 100%' + suffix;
-                this.statusEl.classList.remove('error');
+                this.setStatusMessage('上传完成 100%' + suffix, { variant: hasErrors ? 'warning' : 'success' });
             }
 
-            var self = this;
-            setTimeout(function() {
-                self.hide();
-            }, 800);
+            this.setCancelHandler(this.hide.bind(this));
+
+            // 如果全部成功，自动关闭；如果有错误，保持打开由用户手动关闭
+            if (!hasErrors && !isError) {
+                var self = this;
+                setTimeout(function () {
+                    self.hide();
+                }, 1500);
+            }
         }
     };
-    
+
     function mount() {
         var toolbar = byId("temediafolder");
         var tab = byId("tab-files");
         var modalEl = byId("temf-modal");
-        
+
         if (tab && toolbar) {
             tab.insertBefore(toolbar, tab.firstChild);
         }
-        
+
         if (modalEl && !modalEl.parentElement) {
             document.body.appendChild(modalEl);
         }
     }
-    
+
     // 创建防抖的上传处理器
-    var debouncedUpload = debounce(function() {
+    var debouncedUpload = debounce(function () {
         fileOps.upload();
     }, 300);
 
@@ -3473,13 +3839,13 @@
                 return;
             }
 
-            multi.fetch('', function(data) {
+            multi.fetch('', function (data) {
                 ui.renderFiles(data.files || []);
             }, { bustCache: true });
             return;
         }
 
-        multi.fetch('', function(data) {
+        multi.fetch('', function (data) {
             ui.renderFiles(data.files || []);
         }, { bustCache: true });
     }
@@ -3523,62 +3889,62 @@
         }
     }
 
-    document.addEventListener('click', function(e) {
+    document.addEventListener('click', function (e) {
         var target = e.target;
-        
-            if (target && target.id === "temf-open") {
-                modal.open();
-                e.preventDefault();
-            }
-            
-            if (target && (target.id === "temf-close" || target.hasAttribute("data-temf-close"))) {
-                modal.close();
-                e.preventDefault();
-            }
-            
-        if (target && target.matches(".temf-pick")) {
-                var url = target.value;
-                if (target.checked) {
-                    var meta = {
-                        id: target.getAttribute('data-meta-id') || null
-                    };
-                    selection.add(url, meta);
-                } else {
-                    selection.remove(url);
-                }
-                return;
+
+        if (target && target.id === "temf-open") {
+            modal.open();
+            e.preventDefault();
         }
-            
+
+        if (target && (target.id === "temf-close" || target.hasAttribute("data-temf-close"))) {
+            modal.close();
+            e.preventDefault();
+        }
+
+        if (target && target.matches(".temf-pick")) {
+            var url = target.value;
+            if (target.checked) {
+                var meta = {
+                    id: target.getAttribute('data-meta-id') || null
+                };
+                selection.add(url, meta);
+            } else {
+                selection.remove(url);
+            }
+            return;
+        }
+
         if (target && target.matches("[data-temf-insert]")) {
-                var url = target.getAttribute("data-url");
-                fileOps.insert(url);
-                e.preventDefault();
-            }
-            
+            var url = target.getAttribute("data-url");
+            fileOps.insert(url);
+            e.preventDefault();
+        }
+
         if (target && target.matches("#temf-insert-selected")) {
-                fileOps.insertSelected();
-                e.preventDefault();
+            fileOps.insertSelected();
+            e.preventDefault();
+        }
+
+        var copyBtn = null;
+        if (target) {
+            if (typeof target.closest === 'function') {
+                copyBtn = target.closest("[data-temf-copy]");
             }
-            
-		var copyBtn = null;
-		if (target) {
-			if (typeof target.closest === 'function') {
-				copyBtn = target.closest("[data-temf-copy]");
-			}
-			if (!copyBtn && target.matches && target.matches("[data-temf-copy]")) {
-				copyBtn = target;
-			}
-		}
-		if (copyBtn) {
-				var url = copyBtn.getAttribute("data-url");
-				fileOps.copy(url, copyBtn);
-				e.preventDefault();
-			}
-            
-            if (target && target.id === "temf-upload") {
-                debouncedUpload();
-                e.preventDefault();
+            if (!copyBtn && target.matches && target.matches("[data-temf-copy]")) {
+                copyBtn = target;
             }
+        }
+        if (copyBtn) {
+            var url = copyBtn.getAttribute("data-url");
+            fileOps.copy(url, copyBtn);
+            e.preventDefault();
+        }
+
+        if (target && target.id === "temf-upload") {
+            debouncedUpload();
+            e.preventDefault();
+        }
 
         var refreshBtn = null;
         if (target) {
@@ -3591,13 +3957,12 @@
 
         if (refreshBtn) {
             e.preventDefault();
-            console.log('[TEMF] Refresh button clicked');
             refreshCurrentDirectory();
             return;
         }
     });
 
-    document.addEventListener('dblclick', function(e) {
+    document.addEventListener('dblclick', function (e) {
         var target = e.target;
         if (!target || !target.classList) return;
         if (target.classList.contains('temf-name')) {
@@ -3605,7 +3970,7 @@
             rename.start(target);
         }
     });
-    
+
     /**
      * 处理云存储目录切换（合并COS/OSS逻辑）
      */
@@ -3618,100 +3983,100 @@
         }
 
         var fetchFunction = isMulti
-            ? function(path, callback, opts) { multi.fetch(path, callback, Object.assign({}, opts, { bustCache: options.bustCache })); }
-            : function(path, callback, opts) { cloudStorage.fetch(currentSource, path, callback, Object.assign({}, opts, { bustCache: options.bustCache })); };
-        
-        if (target.id === 'temf-dir') {
-                    var path = target.value || '';
-                    var sub = byId('temf-subdir');
-                    sub.innerHTML = '';
-                    
-                    var opt = document.createElement('option');
-                    opt.value = '';
-                    opt.textContent = '/';
-                    sub.appendChild(opt);
+            ? function (path, callback, opts) { multi.fetch(path, callback, Object.assign({}, opts, { bustCache: options.bustCache })); }
+            : function (path, callback, opts) { cloudStorage.fetch(currentSource, path, callback, Object.assign({}, opts, { bustCache: options.bustCache })); };
 
-                    setCurrentPath(path);
-                    
-                    fetchFunction(path, function(data) {
-                        var folders = data.folders || [];
-                        folders.forEach(function(folder) {
-                            var opt = document.createElement('option');
-                            opt.value = folder.path || folder.name;
-                            opt.textContent = folder.name || folder.path;
-                            sub.appendChild(opt);
-                        });
-                        customSelects.sync('temf-subdir');
-                        ui.renderFiles(data.files || []);
-                    }, options);
+        if (target.id === 'temf-dir') {
+            var path = target.value || '';
+            var sub = byId('temf-subdir');
+            sub.innerHTML = '';
+
+            var opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = '/';
+            sub.appendChild(opt);
+
+            setCurrentPath(path);
+
+            fetchFunction(path, function (data) {
+                var folders = data.folders || [];
+                folders.forEach(function (folder) {
+                    var opt = document.createElement('option');
+                    opt.value = folder.path || folder.name;
+                    opt.textContent = folder.name || folder.path;
+                    sub.appendChild(opt);
+                });
+                customSelects.sync('temf-subdir');
+                ui.renderFiles(data.files || []);
+            }, options);
         } else if (target.id === 'temf-subdir') {
-                    var p1 = (byId('temf-dir').value || '');
-                    var p2 = target.value || '';
-                    var path = p2 ? (p1 ? p1 + '/' + p2 : p2) : p1;
-                    setCurrentPath(path);
-                    
-                    fetchFunction(path, function(data) {
+            var p1 = (byId('temf-dir').value || '');
+            var p2 = target.value || '';
+            var path = p2 ? (p1 ? p1 + '/' + p2 : p2) : p1;
+            setCurrentPath(path);
+
+            fetchFunction(path, function (data) {
                 ui.renderFiles(data.files || []);
                 customSelects.sync('temf-dir');
             }, options);
         }
     }
-    
-    document.addEventListener('change', function(e) {
+
+    document.addEventListener('change', function (e) {
         var target = e.target;
         if (!target) return;
-        
+
         // 获取当前实际使用的存储类型
         var currentSource = TEMF_CONF.source;
         if (currentSource === 'multi' && state.currentStorage) {
             currentSource = state.currentStorage;
         }
-        
+
         // 处理云存储（COS/OSS/UPYUN）目录切换
-        if ((currentSource === 'cos' || currentSource === 'oss' || currentSource === 'upyun') && 
+        if ((currentSource === 'cos' || currentSource === 'oss' || currentSource === 'upyun') &&
             (target.id === 'temf-dir' || target.id === 'temf-subdir')) {
             handleCloudStorageDirectoryChange(target, currentSource);
-            } else if (currentSource === 'lsky') {
-                if (target && target.id === 'temf-dir') {
-                    var selection = target.value;
-                    setCurrentPath('');
-                    
-                    // 多模式下使用multi.fetch，单模式下使用lsky.fetch
-                    var fetchFunction = TEMF_CONF.source === 'multi' ? multi.fetch : lsky.fetch;
-                    
-                    if (selection === 'album') {
-                        // 选择相册：使用相册ID过滤
-                        fetchFunction('album', function(data) {
-                            ui.renderFiles(data.files || []);
-                        });
-                    } else {
-                        // 选择全部：显示所有图片
-                        fetchFunction('', function(data) {
-                            ui.renderFiles(data.files || []);
-                        });
-                    }
-                }
-                
-                // 兰空图床不需要处理 temf-subdir，因为已经隐藏了
-            } else if (currentSource === 'local') {
-                if (target && target.id === 'temf-year') {
-                    local.buildMonths(target.value);
-                    local.renderCurrentMonth();
-                }
-                
-                if (target && target.id === 'temf-month') {
-                    local.renderCurrentMonth();
+        } else if (currentSource === 'lsky') {
+            if (target && target.id === 'temf-dir') {
+                var selection = target.value;
+                setCurrentPath('');
+
+                // 多模式下使用multi.fetch，单模式下使用lsky.fetch
+                var fetchFunction = TEMF_CONF.source === 'multi' ? multi.fetch : lsky.fetch;
+
+                if (selection === 'album') {
+                    // 选择相册：使用相册ID过滤
+                    fetchFunction('album', function (data) {
+                        ui.renderFiles(data.files || []);
+                    });
+                } else {
+                    // 选择全部：显示所有图片
+                    fetchFunction('', function (data) {
+                        ui.renderFiles(data.files || []);
+                    });
                 }
             }
-    });
-    
-    document.addEventListener("keydown", function(e) {
-        if (e.key === "Escape") {
-                modal.close();
+
+            // 兰空图床不需要处理 temf-subdir，因为已经隐藏了
+        } else if (currentSource === 'local') {
+            if (target && target.id === 'temf-year') {
+                local.buildMonths(target.value);
+                local.renderCurrentMonth();
+            }
+
+            if (target && target.id === 'temf-month') {
+                local.renderCurrentMonth();
+            }
         }
     });
-    
-    
+
+    document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") {
+            modal.close();
+        }
+    });
+
+
     /**
      * 图片懒加载 - 使用Intersection Observer提升性能
      * 使用 loading.gif 作为占位图，加载完成后平滑过渡
@@ -3719,16 +4084,16 @@
     function initLazyLoading() {
         if (!window.IntersectionObserver) {
             // 降级处理：不支持IntersectionObserver时直接加载所有图片
-            document.querySelectorAll('.temf-lazy-img').forEach(function(img) {
+            document.querySelectorAll('.temf-lazy-img').forEach(function (img) {
                 if (img.dataset.src) {
                     loadImageWithTransition(img);
                 }
             });
             return;
         }
-        
-        var imageObserver = new IntersectionObserver(function(entries, observer) {
-            entries.forEach(function(entry) {
+
+        var imageObserver = new IntersectionObserver(function (entries, observer) {
+            entries.forEach(function (entry) {
                 if (entry.isIntersecting) {
                     var img = entry.target;
                     if (img.dataset.src && !img.classList.contains('temf-loading')) {
@@ -3741,9 +4106,9 @@
             rootMargin: '300px', // 提前300px开始加载，减少滚动卡顿
             threshold: 0.01 // 只要1%进入视口就开始加载
         });
-        
+
         // 观察所有懒加载图片
-        document.querySelectorAll('.temf-lazy-img').forEach(function(img) {
+        document.querySelectorAll('.temf-lazy-img').forEach(function (img) {
             // 检查是否已经是 loading.gif，如果是则需要懒加载
             var currentSrc = img.src || '';
             if (currentSrc.indexOf('loading.gif') !== -1 || !img.complete) {
@@ -3751,7 +4116,7 @@
             }
         });
     }
-    
+
     /**
      * 加载图片并应用平滑过渡效果
      */
@@ -3760,7 +4125,7 @@
         if (img.classList.contains('temf-loading') || img.classList.contains('temf-loaded')) {
             return;
         }
-        
+
         img.classList.add('temf-loading');
         if (img.dataset.loader) {
             img.style.backgroundImage = 'url(' + img.dataset.loader + ')';
@@ -3768,27 +4133,27 @@
             img.style.backgroundPosition = 'center';
             img.style.backgroundSize = '28px 28px';
         }
-        
+
         var targetSrc = img.dataset.src;
         if (!targetSrc) {
             return;
         }
-        
+
         // 创建新图片对象预加载
         var tempImg = new Image();
-        
-        tempImg.onload = function() {
+
+        tempImg.onload = function () {
             // 图片预加载成功，但还要等实际元素加载完成
             img.src = targetSrc;
 
             // 等待实际 img 元素加载完成
-            img.onload = function() {
+            img.onload = function () {
                 img.classList.remove('temf-loading');
                 img.classList.add('temf-loaded');
                 img.style.opacity = '';
                 img.style.transition = '';
 
-                requestAnimationFrame(function() {
+                requestAnimationFrame(function () {
                     img.style.backgroundImage = 'none';
                 });
             };
@@ -3798,8 +4163,8 @@
                 img.onload();
             }
         };
-        
-        tempImg.onerror = function() {
+
+        tempImg.onerror = function () {
             // 加载失败，尝试使用原始URL
             img.classList.remove('temf-loading');
             img.style.backgroundImage = 'none';
@@ -3808,28 +4173,28 @@
                 img.classList.add('temf-loaded');
             }
         };
-        
+
         // 开始预加载
         tempImg.src = targetSrc;
     }
-    
+
     /**
      * 监听窗口大小变化，重新计算分页大小
      */
     var resizeTimer = null;
     function setupResizeListener() {
-        window.addEventListener('resize', function() {
+        window.addEventListener('resize', function () {
             // 防抖处理
             if (resizeTimer) {
                 clearTimeout(resizeTimer);
             }
-            
-            resizeTimer = setTimeout(function() {
+
+            resizeTimer = setTimeout(function () {
                 // 只有在有文件显示时才重新计算
                 if (state.pagination.allFiles && state.pagination.allFiles.length > 0) {
                     var oldPageSize = state.pagination.pageSize;
                     var newPageSize = calculatePageSize();
-                    
+
                     // 如果页面大小变化，重新渲染
                     if (oldPageSize !== newPageSize) {
                         state.pagination.pageSize = newPageSize;
@@ -3839,90 +4204,90 @@
             }, 300); // 300ms 防抖
         });
     }
-    
+
     // 监听DOM变化，自动初始化新添加的图片
     var lazyImageMutationObserver = null;
     function setupLazyImageObserver() {
         if (!window.MutationObserver) return;
-        
+
         var targetNode = document.querySelector('#temf-modal .temf-body');
         if (!targetNode) return;
-        
-        lazyImageMutationObserver = new MutationObserver(function(mutations) {
-            mutations.forEach(function(mutation) {
+
+        lazyImageMutationObserver = new MutationObserver(function (mutations) {
+            mutations.forEach(function (mutation) {
                 if (mutation.addedNodes.length > 0) {
                     initLazyLoading();
                 }
             });
         });
-        
+
         lazyImageMutationObserver.observe(targetNode, {
             childList: true,
             subtree: true
         });
     }
-        
-/**
- * 监听窗口大小变化，重新计算分页大小
- */
-var resizeTimer = null;
-function setupResizeListener() {
-    window.addEventListener('resize', function() {
-        // 防抖处理
-        if (resizeTimer) {
-            clearTimeout(resizeTimer);
-        }
-        
-        resizeTimer = setTimeout(function() {
-            // 只有在有文件显示时才重新计算
-            if (state.pagination.allFiles && state.pagination.allFiles.length > 0) {
-                var oldPageSize = state.pagination.pageSize;
-                var newPageSize = calculatePageSize();
-                
-                // 如果页面大小变化，重新渲染
-                if (oldPageSize !== newPageSize) {
-                    state.pagination.pageSize = newPageSize;
-                    ui.renderCurrentPage();
+
+    /**
+     * 监听窗口大小变化，重新计算分页大小
+     */
+    var resizeTimer = null;
+    function setupResizeListener() {
+        window.addEventListener('resize', function () {
+            // 防抖处理
+            if (resizeTimer) {
+                clearTimeout(resizeTimer);
+            }
+
+            resizeTimer = setTimeout(function () {
+                // 只有在有文件显示时才重新计算
+                if (state.pagination.allFiles && state.pagination.allFiles.length > 0) {
+                    var oldPageSize = state.pagination.pageSize;
+                    var newPageSize = calculatePageSize();
+
+                    // 如果页面大小变化，重新渲染
+                    if (oldPageSize !== newPageSize) {
+                        state.pagination.pageSize = newPageSize;
+                        ui.renderCurrentPage();
+                    }
                 }
-            }
-        }, 300); // 300ms 防抖
-    });
-}
-        
-// 监听DOM变化，自动初始化新添加的图片
-var lazyImageMutationObserver = null;
-function setupLazyImageObserver() {
-    if (!window.MutationObserver) return;
-    
-    var targetNode = document.querySelector('#temf-modal .temf-body');
-    if (!targetNode) return;
-    
-    lazyImageMutationObserver = new MutationObserver(function(mutations) {
-        mutations.forEach(function(mutation) {
-            if (mutation.addedNodes.length > 0) {
-                initLazyLoading();
-            }
+            }, 300); // 300ms 防抖
         });
-    });
-    
-    lazyImageMutationObserver.observe(targetNode, {
-        childList: true,
-        subtree: true
-    });
-}
-        
-if (document.readyState !== "loading") {
-    mount();
-    customSelects.initAll();
-    setupLazyImageObserver();
-    setupResizeListener();
-} else {
-    document.addEventListener("DOMContentLoaded", function() {
+    }
+
+    // 监听DOM变化，自动初始化新添加的图片
+    var lazyImageMutationObserver = null;
+    function setupLazyImageObserver() {
+        if (!window.MutationObserver) return;
+
+        var targetNode = document.querySelector('#temf-modal .temf-body');
+        if (!targetNode) return;
+
+        lazyImageMutationObserver = new MutationObserver(function (mutations) {
+            mutations.forEach(function (mutation) {
+                if (mutation.addedNodes.length > 0) {
+                    initLazyLoading();
+                }
+            });
+        });
+
+        lazyImageMutationObserver.observe(targetNode, {
+            childList: true,
+            subtree: true
+        });
+    }
+
+    if (document.readyState !== "loading") {
         mount();
         customSelects.initAll();
         setupLazyImageObserver();
         setupResizeListener();
-    });
-}
+    } else {
+        document.addEventListener("DOMContentLoaded", function () {
+            mount();
+            customSelects.initAll();
+            setupLazyImageObserver();
+            setupResizeListener();
+        });
+    }
 
 })(window, document);
