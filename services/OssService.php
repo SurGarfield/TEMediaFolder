@@ -3,6 +3,7 @@
 namespace TypechoPlugin\TEMediaFolder\Services;
 
 use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
+use TypechoPlugin\TEMediaFolder\Core\HttpClient;
 
 class OssService extends BaseService
 {
@@ -12,6 +13,8 @@ class OssService extends BaseService
     {
         parent::__construct($config);
         $this->ossConfig = $config->getOssConfig();
+        $this->ossConfig['endpoint'] = $this->normalizeHost($this->ossConfig['endpoint'] ?? '');
+        $this->ossConfig['domain'] = trim((string)($this->ossConfig['domain'] ?? ''));
     }
 
     public function isConfigured()
@@ -185,6 +188,15 @@ class OssService extends BaseService
         }
 
         try {
+            $validation = $this->validateUploadFile($filePath, $fileName);
+            if (!$validation['valid']) {
+                return $this->buildUploadResult(false, '', '', ['msg' => $validation['error']]);
+            }
+
+            if (isset($validation['sanitizedFileName'])) {
+                $fileName = $validation['sanitizedFileName'];
+            }
+
             // 使用父类方法处理压缩
             $compressionResult = $this->processImageCompression($filePath, $fileName, 'oss');
             $processedFilePath = $compressionResult['path'];
@@ -239,21 +251,30 @@ class OssService extends BaseService
     {
         $domain = $this->ossConfig['domain'];
         if (!empty($domain)) {
-            return $domain;
+            if (!preg_match('#^https?://#i', $domain)) {
+                $domain = 'https://' . $this->normalizeHost($domain);
+            }
+            return rtrim($domain, '/');
         }
-        
-        $endpoint = $this->ossConfig['endpoint'];
-        $bucket = $this->ossConfig['bucket'];
-        $endpoint = preg_replace('#^https?://#i', '', $endpoint);
-        return 'https://' . $bucket . '.' . $endpoint;
+
+        $host = $this->getHost();
+        return 'https://' . $host;
     }
 
     private function getHost()
     {
-        $endpoint = $this->ossConfig['endpoint'];
-        $bucket = $this->ossConfig['bucket'];
-        $endpoint = preg_replace('#^https?://#i', '', $endpoint);
-        return $bucket . '.' . $endpoint;
+        $endpoint = $this->normalizeHost($this->ossConfig['endpoint']);
+        $bucket = trim((string)$this->ossConfig['bucket']);
+        if ($endpoint === '') {
+            return $bucket;
+        }
+
+        // endpoint 已包含 bucket 时避免重复拼接
+        if ($bucket !== '' && stripos($endpoint, $bucket . '.') === 0) {
+            return $endpoint;
+        }
+
+        return ($bucket !== '' ? $bucket . '.' : '') . $endpoint;
     }
 
     private function getScheme()
@@ -264,24 +285,38 @@ class OssService extends BaseService
     private function getPublicUrl($objectKey)
     {
         $domain = $this->ossConfig['domain'];
+        $encodedKey = $this->encodeKey($objectKey);
         if (!empty($domain)) {
             if (!preg_match('#^https?://#i', $domain)) {
                 $domain = 'https://' . $domain;
             }
-            return rtrim($domain, '/') . '/' . ltrim($objectKey, '/');
+            return rtrim($domain, '/') . '/' . ltrim($encodedKey, '/');
         }
-        
-        return $this->getEndpoint() . '/' . ltrim($objectKey, '/');
+
+        return $this->getEndpoint() . '/' . ltrim($encodedKey, '/');
     }
 
     private function getThumbnailUrl($originalUrl)
     {
         // 获取配置的缩略图尺寸
         $thumbSize = $this->config->get('thumbSize', 120);
-   
-        return $originalUrl . '?x-oss-process=image/resize,m_fill,w_' . $thumbSize . ',h_' . $thumbSize
+
+        $separator = strpos($originalUrl, '?') !== false ? '&' : '?';
+        return $originalUrl . $separator . 'x-oss-process=image/resize,m_fill,w_' . $thumbSize . ',h_' . $thumbSize
             . '/quality,Q_75'
             . '/format,webp';
+    }
+
+    private function normalizeHost($value)
+    {
+        $value = trim((string)$value);
+        if ($value === '') {
+            return '';
+        }
+
+        $value = preg_replace('#^https?://#i', '', $value);
+        $value = preg_replace('#/.*$#', '', $value);
+        return trim($value, " \t\n\r\0\x0B/");
     }
 
     private function generateAuthorization($method, $resource, $date, $contentType = '', $headers = [])
@@ -306,25 +341,26 @@ class OssService extends BaseService
 
     private function makeRequest($url, $method = 'GET', $headers = [], $body = null)
     {
-        $context = [
-            'http' => [
-                'method' => $method,
-                'timeout' => 30,
-                'header' => implode("\r\n", $headers)
-            ]
-        ];
-        
-        if ($body !== null) {
-            $context['http']['content'] = $body;
+        $result = HttpClient::request($url, $method, $headers, $body, [
+            'timeout' => 30,
+            'connect_timeout' => 10,
+            'verify_ssl' => false,
+            'follow_location' => false,
+            'max_redirs' => 0
+        ]);
+
+        $response = (string)($result['body'] ?? '');
+        $statusCode = (int)($result['status'] ?? 0);
+        $error = (string)($result['error'] ?? '');
+
+        if ($error !== '' && $statusCode === 0) {
+            throw new \Exception('Request failed: ' . $error);
         }
-        
-        $ctx = stream_context_create($context);
-        $response = @file_get_contents($url, false, $ctx);
-        
-        if ($response === false) {
-            throw new \Exception('Request failed');
+
+        if ($statusCode >= 400) {
+            throw new \Exception('Request failed: HTTP ' . $statusCode);
         }
-        
+
         return $response;
     }
 

@@ -3,6 +3,7 @@
 namespace TypechoPlugin\TEMediaFolder\Services;
 
 use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
+use TypechoPlugin\TEMediaFolder\Core\HttpClient;
 
 class UpyunService extends BaseService
 {
@@ -380,26 +381,18 @@ class UpyunService extends BaseService
 
     private function makeRequest($url, $method = 'GET', $headers = [], $body = null)
     {
-        $ch = curl_init();
-        
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        
-        if ($body !== null && ($method === 'PUT' || $method === 'POST')) {
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-        }
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
-        
-        curl_close($ch);
-        
+        $result = HttpClient::request($url, $method, $headers, $body, [
+            'timeout' => 30,
+            'connect_timeout' => 10,
+            'verify_ssl' => false,
+            'follow_location' => false,
+            'max_redirs' => 0
+        ]);
+
+        $response = (string)($result['body'] ?? '');
+        $httpCode = (int)($result['status'] ?? 0);
+        $curlError = (string)($result['error'] ?? '');
+
         if ($httpCode >= 200 && $httpCode < 300) {
             return $response;
         }
@@ -416,7 +409,7 @@ class UpyunService extends BaseService
         throw new \Exception($errorMsg);
     }
 
-    private function sanitizeFileName($fileName)
+    protected function sanitizeFileName($fileName)
     {
         // 移除或替换不安全的字符
         $fileName = preg_replace('/[^\w\-\.]+/u', '_', $fileName);

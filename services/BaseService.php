@@ -134,14 +134,93 @@ abstract class BaseService
             }
         }
         
-        // 验证文件大小
-        $maxSize = $maxSize ?? 10 * 1024 * 1024; // 默认10MB
+        // 验证文件大小（优先使用 PHP 上传限制）
+        $maxSize = $maxSize ?? $this->getEffectiveUploadLimitBytes();
         $fileSize = filesize($filePath);
-        if ($fileSize > $maxSize) {
-            return ['valid' => false, 'error' => 'File too large'];
+        if ($maxSize > 0 && $fileSize > $maxSize) {
+            return [
+                'valid' => false,
+                'error' => 'File too large. Max: ' . $this->formatBytes($maxSize)
+            ];
         }
         
         return ['valid' => true, 'sanitizedFileName' => $fileName];
+    }
+
+    protected function getEffectiveUploadLimitBytes()
+    {
+        $uploadMax = $this->parseIniSizeToBytes(ini_get('upload_max_filesize'));
+        $postMax = $this->parseIniSizeToBytes(ini_get('post_max_size'));
+
+        if ($uploadMax > 0 && $postMax > 0) {
+            return min($uploadMax, $postMax);
+        }
+
+        if ($uploadMax > 0) {
+            return $uploadMax;
+        }
+
+        if ($postMax > 0) {
+            return $postMax;
+        }
+
+        return 0;
+    }
+
+    protected function parseIniSizeToBytes($value)
+    {
+        if ($value === false || $value === null) {
+            return 0;
+        }
+
+        $value = trim((string)$value);
+        if ($value === '' || $value === '-1' || $value === '0') {
+            return 0;
+        }
+
+        if (!preg_match('/^(\d+(?:\.\d+)?)\s*([KMGTP]?B?)?$/i', $value, $matches)) {
+            return 0;
+        }
+
+        $number = (float)$matches[1];
+        $unit = strtoupper($matches[2] ?? '');
+
+        $multiplier = 1;
+        if ($unit === 'K' || $unit === 'KB') {
+            $multiplier = 1024;
+        } elseif ($unit === 'M' || $unit === 'MB') {
+            $multiplier = 1024 * 1024;
+        } elseif ($unit === 'G' || $unit === 'GB') {
+            $multiplier = 1024 * 1024 * 1024;
+        } elseif ($unit === 'T' || $unit === 'TB') {
+            $multiplier = 1024 * 1024 * 1024 * 1024;
+        } elseif ($unit === 'P' || $unit === 'PB') {
+            $multiplier = 1024 * 1024 * 1024 * 1024 * 1024;
+        }
+
+        return (int) floor($number * $multiplier);
+    }
+
+    protected function formatBytes($bytes)
+    {
+        $bytes = (float)$bytes;
+        if ($bytes <= 0) {
+            return '0 B';
+        }
+
+        $units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+        $index = 0;
+
+        while ($bytes >= 1024 && $index < count($units) - 1) {
+            $bytes /= 1024;
+            $index++;
+        }
+
+        if ($index === 0) {
+            return (string)round($bytes) . ' ' . $units[$index];
+        }
+
+        return rtrim(rtrim(number_format($bytes, 2, '.', ''), '0'), '.') . ' ' . $units[$index];
     }
     
     /**

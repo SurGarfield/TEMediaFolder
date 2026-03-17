@@ -4,7 +4,7 @@
  * 媒体预览（支持本地、腾讯COS、阿里云OSS、又拍云和兰空图床）
  * @package TEMediaFolder
  * @author 森木志
- * @version 3.1.0
+ * @version 3.2.0
  * @link https://github.com/SurGarfield/TEMediaFolder
  */
 
@@ -59,31 +59,9 @@ class Plugin implements PluginInterface
         \Typecho\Plugin::factory('admin/write-page.php')->bottom = [__CLASS__, 'render'];
         
     
-        \Utils\Helper::addAction('temf-cos-list', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-cos-upload', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-cos-delete', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-cos-rename', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-oss-list', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-oss-upload', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-oss-delete', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-oss-rename', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-upyun-list', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-upyun-upload', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-upyun-delete', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-upyun-rename', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-lsky-list', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-lsky-upload', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-lsky-delete', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-local-list', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-local-upload', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-local-rename', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-local-delete', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-storage-types', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-multi-list', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-multi-upload', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-multi-rename', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-multi-delete', 'TEMediaFolder_Action');
-        \Utils\Helper::addAction('temf-test-upyun', 'TEMediaFolder_Action');
+        foreach (self::getRegisteredActions() as $actionName) {
+            \Utils\Helper::addAction($actionName, 'TEMediaFolder_Action');
+        }
 
         try {
             $options = \Widget\Options::alloc();
@@ -210,29 +188,41 @@ class Plugin implements PluginInterface
     {
       
         if (class_exists('Utils\Helper')) {
-            \Utils\Helper::removeAction('temf-cos-list');
-            \Utils\Helper::removeAction('temf-cos-upload');
-            \Utils\Helper::removeAction('temf-cos-delete');
-            \Utils\Helper::removeAction('temf-oss-list');
-            \Utils\Helper::removeAction('temf-oss-upload');
-            \Utils\Helper::removeAction('temf-oss-delete');
-            \Utils\Helper::removeAction('temf-upyun-list');
-            \Utils\Helper::removeAction('temf-upyun-upload');
-            \Utils\Helper::removeAction('temf-upyun-delete');
-            \Utils\Helper::removeAction('temf-lsky-list');
-            \Utils\Helper::removeAction('temf-lsky-upload');
-            \Utils\Helper::removeAction('temf-lsky-delete');
-            \Utils\Helper::removeAction('temf-local-list');
-            \Utils\Helper::removeAction('temf-local-upload');
-            \Utils\Helper::removeAction('temf-local-rename');
-            \Utils\Helper::removeAction('temf-local-delete');
-            \Utils\Helper::removeAction('temf-storage-types');
-            \Utils\Helper::removeAction('temf-multi-list');
-            \Utils\Helper::removeAction('temf-multi-upload');
-            \Utils\Helper::removeAction('temf-multi-rename');
-            \Utils\Helper::removeAction('temf-multi-delete');
-            \Utils\Helper::removeAction('temf-test-upyun');
+            foreach (self::getRegisteredActions() as $actionName) {
+                \Utils\Helper::removeAction($actionName);
+            }
         }
+    }
+
+    private static function getRegisteredActions()
+    {
+        return [
+            'temf-cos-list',
+            'temf-cos-upload',
+            'temf-cos-delete',
+            'temf-cos-rename',
+            'temf-oss-list',
+            'temf-oss-upload',
+            'temf-oss-delete',
+            'temf-oss-rename',
+            'temf-upyun-list',
+            'temf-upyun-upload',
+            'temf-upyun-delete',
+            'temf-upyun-rename',
+            'temf-lsky-list',
+            'temf-lsky-upload',
+            'temf-lsky-delete',
+            'temf-local-list',
+            'temf-local-upload',
+            'temf-local-rename',
+            'temf-local-delete',
+            'temf-storage-types',
+            'temf-multi-list',
+            'temf-multi-upload',
+            'temf-multi-rename',
+            'temf-multi-delete',
+            'temf-test-upyun',
+        ];
     }
 
     /**

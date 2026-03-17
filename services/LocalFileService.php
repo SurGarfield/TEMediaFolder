@@ -6,6 +6,19 @@ use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
 
 class LocalFileService extends BaseService
 {
+    private static $imageExtensionsMap = [
+        'jpg' => true,
+        'jpeg' => true,
+        'png' => true,
+        'gif' => true,
+        'webp' => true,
+        'bmp' => true,
+        'tiff' => true,
+        'tif' => true,
+        'ico' => true,
+        'svg' => true,
+    ];
+
     private $fileGroups = null;
 
     public function getFileGroups()
@@ -36,7 +49,6 @@ class LocalFileService extends BaseService
         $allowedExtensions = array_flip(array_map('strtolower', $allowed));
         
         $groups = [];
-        $fileCount = 0;
 
         // 性能优化：使用更高效的迭代器配置
         $iterator = new \RecursiveIteratorIterator(
@@ -73,14 +85,6 @@ class LocalFileService extends BaseService
                 $ym = date('Y-m', $mtime);
             }
             
-            if ($maxPerMonth > 0 && isset($groups[$ym]) && count($groups[$ym]) >= $maxPerMonth) {
-                $oldestInMonth = end($groups[$ym])['mtime'];
-                if ($mtime <= $oldestInMonth) {
-                    continue;
-                }
-                array_pop($groups[$ym]);
-            }
-
             $url = $uploadUrl . $relative;
 
             $directoryPath = '';
@@ -99,21 +103,28 @@ class LocalFileService extends BaseService
                 'directory' => $directoryPath
             ];
             
-            // 性能优化：只为图片生成缩略图URL，使用预计算的扩展名检查
-            if (isset($allowedExtensions[$ext]) && $this->isImageExtension($ext)) {
+            // 性能优化：仅图片生成缩略图，避免额外函数调用
+            if (isset(self::$imageExtensionsMap[$ext])) {
                 $fileData['thumbnail'] = $this->getThumbnailUrl($url);
             }
             
-            // 性能优化：按时间插入排序，保持每月文件按时间降序
             if (!isset($groups[$ym])) {
                 $groups[$ym] = [];
             }
-            
-            // 二分插入排序以保持时间顺序
-            $this->insertSorted($groups[$ym], $fileData);
-            
-            $fileCount++;
+
+            $groups[$ym][] = $fileData;
         }
+
+        foreach ($groups as $ym => &$items) {
+            usort($items, function($a, $b) {
+                return ($b['mtime'] ?? 0) <=> ($a['mtime'] ?? 0);
+            });
+
+            if ($maxPerMonth > 0 && count($items) > $maxPerMonth) {
+                $items = array_slice($items, 0, $maxPerMonth);
+            }
+        }
+        unset($items);
 
         // 性能优化：按年月倒序排列
         krsort($groups);
@@ -121,50 +132,8 @@ class LocalFileService extends BaseService
         return $groups;
     }
 
-    /**
-     * 性能优化：二分插入排序
-     */
-    private function insertSorted(&$array, $item) {
-        $count = count($array);
-        if ($count === 0) {
-            $array[] = $item;
-            return;
-        }
 
-        // 如果比最新的还新，直接插入到开头
-        if ($item['mtime'] >= $array[0]['mtime']) {
-            array_unshift($array, $item);
-            return;
-        }
 
-        // 如果比最旧的还旧，插入到末尾
-        if ($item['mtime'] <= $array[$count - 1]['mtime']) {
-            $array[] = $item;
-            return;
-        }
-
-        // 二分查找插入位置
-        $left = 0;
-        $right = $count - 1;
-        
-        while ($left <= $right) {
-            $mid = intval(($left + $right) / 2);
-            if ($array[$mid]['mtime'] > $item['mtime']) {
-                $left = $mid + 1;
-            } else {
-                $right = $mid - 1;
-            }
-        }
-
-        array_splice($array, $left, 0, [$item]);
-    }
-
- 
-    private function isImageExtension($extension) {
-        return $this->isImageFile('file.' . $extension);
-    }
-
-  
     public function getFileList($path = '')
     {
         $uploadDir = $this->config->getUploadDir();
@@ -211,12 +180,8 @@ class LocalFileService extends BaseService
             $processedFilePath = $compressionResult['path'];
             $isCompressed = $compressionResult['compressed'];
             
-            // 检查文件大小（使用处理后的文件）
+            // 记录处理后的文件大小
             $fileSize = filesize($processedFilePath);
-            if ($fileSize > 10 * 1024 * 1024) {
-                $this->cleanupTempFile($processedFilePath);
-                return $this->buildUploadResult(false, '', '', ['msg' => 'File too large']);
-            }
             
             // 计算上传目录（支持指定年月）
             $currentDate = '';

@@ -3,6 +3,7 @@
 namespace TypechoPlugin\TEMediaFolder\Services;
 
 use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
+use TypechoPlugin\TEMediaFolder\Core\HttpClient;
 
 class CosService extends BaseService
 {
@@ -355,47 +356,35 @@ class CosService extends BaseService
 
     private function makeRequest($url, $method = 'GET', $headers = [], $body = null)
     {
-        $context = [
-            'http' => [
-                'method' => $method,
-                'timeout' => 30,
-                'header' => implode("\r\n", $headers),
-                'ignore_errors' => true  // 允许获取错误响应
-            ]
-        ];
-        
-        if ($body !== null) {
-            $context['http']['content'] = $body;
+        $result = HttpClient::request($url, $method, $headers, $body, [
+            'timeout' => 30,
+            'connect_timeout' => 10,
+            'verify_ssl' => false,
+            'follow_location' => false,
+            'max_redirs' => 0
+        ]);
+
+        $response = (string)($result['body'] ?? '');
+        $statusCode = (int)($result['status'] ?? 0);
+        $error = (string)($result['error'] ?? '');
+
+        if ($error !== '' && $statusCode === 0) {
+            throw new \Exception('Request failed: ' . $error);
         }
-        
-        $ctx = stream_context_create($context);
-        $response = @file_get_contents($url, false, $ctx);
-        
-        if ($response === false) {
-            $error = error_get_last();
-            throw new \Exception('Request failed: ' . ($error['message'] ?? 'Unknown error'));
-        }
-        
-        $httpHeaders = $http_response_header ?? [];
-        if (!empty($httpHeaders)) {
-            $statusLine = $httpHeaders[0];
-            if (preg_match('/HTTP\/\d\.\d\s+(\d+)/', $statusLine, $matches)) {
-                $statusCode = (int)$matches[1];
-                if ($statusCode >= 400) {
-                    $errorMsg = 'HTTP ' . $statusCode;
-                    if ($response) {
-                        $xml = @simplexml_load_string($response);
-                        if ($xml && isset($xml->Message)) {
-                            $errorMsg .= ': ' . (string)$xml->Message;
-                        } elseif ($xml && isset($xml->Code)) {
-                            $errorMsg .= ': ' . (string)$xml->Code;
-                        }
-                    }
-                    throw new \Exception($errorMsg);
+
+        if ($statusCode >= 400) {
+            $errorMsg = 'HTTP ' . $statusCode;
+            if ($response !== '') {
+                $xml = @simplexml_load_string($response);
+                if ($xml && isset($xml->Message)) {
+                    $errorMsg .= ': ' . (string)$xml->Message;
+                } elseif ($xml && isset($xml->Code)) {
+                    $errorMsg .= ': ' . (string)$xml->Code;
                 }
             }
+            throw new \Exception($errorMsg);
         }
-        
+
         return $response;
     }
 
@@ -518,7 +507,7 @@ class CosService extends BaseService
     /**
      * 清理文件名，确保安全上传
      */
-    private function sanitizeFileName($fileName)
+    protected function sanitizeFileName($fileName)
     {
         $pathInfo = pathinfo($fileName);
         $extension = isset($pathInfo['extension']) ? $pathInfo['extension'] : '';

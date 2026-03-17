@@ -3,6 +3,7 @@
 namespace TypechoPlugin\TEMediaFolder\Services;
 
 use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
+use TypechoPlugin\TEMediaFolder\Core\HttpClient;
 
 class LskyService
 {
@@ -15,6 +16,7 @@ class LskyService
     {
         $this->config = $config;
         $this->lskyConfig = $config->getLskyConfig();
+        $this->lskyConfig['url'] = $this->normalizeBaseUrl($this->lskyConfig['url'] ?? '');
     }
 
     public function isConfigured()
@@ -333,8 +335,8 @@ class LskyService
             $baseUrl = rtrim($this->lskyConfig['url'], '/');
             
             // 根据兰空图床API兼容性测试结果，智能选择相册端点
-            // 旧版本兰空图床 (BatIMG): V1 ✅, V2 ✅
-            // 新版本兰空图床: V1 ✅, V2 ✅
+            // 旧版本兰空图床 (BatIMG): V1/V2 可用
+            // 新版本兰空图床: V1/V2 可用
             // 两个版本都支持这些端点，按优先级排序
             $albumEndpoints = [
                 '/api/v1/albums?page=1&per_page=100',          // 两个版本都支持
@@ -860,22 +862,18 @@ class LskyService
             if (class_exists('\\TypechoPlugin\\TEMediaFolder\\Core\\ImageCompressor')) {
                 $compressionResult = \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::processImage($filePath, $fileName, 'lsky');
                 $processedFilePath = $compressionResult['path'];
-                $isCompressed = $compressionResult['compressed'];
             } else {
-                // 压缩器类不存在时的降级处理
                 $compressionResult = ['path' => $filePath, 'compressed' => false];
                 $processedFilePath = $filePath;
-                $isCompressed = false;
             }
         } catch (\Exception $e) {
-            // 压缩处理失败时的降级处理
             $compressionResult = ['path' => $filePath, 'compressed' => false];
             $processedFilePath = $filePath;
-            $isCompressed = false;
         }
 
         try {
             $baseUrl = rtrim($this->lskyConfig['url'], '/');
+            $safeFileName = basename($fileName);
             
             // 依据官方文档优先尝试 V2，再尝试 V1
             // V2: servers: /api/v2 + path /upload => /api/v2/upload
@@ -897,352 +895,26 @@ class LskyService
             // - 'image', 'photo', 'upload' 参数：都返回 "file 不能为空" 错误
             $paramNames = ['file']; // 新版本只接受 'file' 参数名
             
-            // 先按官方参数构造：仅必需参数
-            foreach ($uploadEndpoints as $endpoint) {
-                foreach ($paramNames as $paramName) {
-                    try {
-                        $url = $baseUrl . $endpoint;
-                        
-                        // 文件 + 根据API版本的必要参数
-                        $curlFile = new \CURLFile($processedFilePath, $mimeType, basename($processedFilePath));
-                        $postData = [
-                            $paramName => $curlFile
-                        ];
-                        
-                        // 根据官方API文档添加必要参数
-                        if (strpos($endpoint, '/v1/') !== false) {
-                            // V1 API：根据官方文档添加所有可能有用的参数
-                            $postData['permission'] = 1; // 1=公开，0=私有
-                            $postData['strategy_id'] = $this->resolveStorageId(true);
-                            if (!empty($this->lskyConfig['albumId'])) {
-                                $postData['album_id'] = $this->lskyConfig['albumId'];
-                            }
-                        } elseif (strpos($endpoint, '/v2/') !== false) {
-                            // V2 API：必需参数（storage_id 必填）
-                            $postData['storage_id'] = (int) $this->resolveStorageId();
-                            if (!empty($this->lskyConfig['albumId'])) {
-                                $postData['album_id'] = intval($this->lskyConfig['albumId']);
-                            }
-                            // 可选参数：公开与去除EXIF
-                            $postData['is_public'] = true; // 布尔
-                            $postData['is_remove_exif'] = true; // 布尔
-                        }
-                        
-                        // 禁用 Expect: 100-continue 以避免大文件延迟
-                        $headers = ['Expect:'];
-                        $response = $this->makeRequest($url, 'POST', $headers, $postData);
-                        
-                        
-                        $data = json_decode($response, true);
-                        
-                        if ($data && isset($data['status']) && ($data['status'] === true || $data['status'] === 'success') && isset($data['data'])) {
-                            $uploadData = $data['data'];
-                            // 根据官方API文档解析URL
-                            $url = '';
-                            if (isset($uploadData['links']['url'])) {
-                                // V1 API格式：data.links.url
-                                $url = $uploadData['links']['url'];
-                            } elseif (isset($uploadData['public_url'])) {
-                                // V2 API格式：data.public_url
-                                $url = $uploadData['public_url'];
-                            } elseif (isset($uploadData['pathname'])) {
-                                // 备用：根据pathname构建URL
-                                $baseUrl = rtrim($this->lskyConfig['url'], '/');
-                                $url = $baseUrl . '/' . $uploadData['pathname'];
-                            } elseif (isset($uploadData['url'])) {
-                                // 直接URL
-                                $url = $uploadData['url'];
-                            }
-                            
-                            $result = [
-                                'ok' => true,
-                                'url' => $url,
-                                'name' => $uploadData['name'] ?? $fileName,
-                                'key' => $uploadData['key'] ?? ($uploadData['id'] ?? ''),
-                                'size' => $uploadData['size'] ?? filesize($filePath)
-                            ];
-                            return $this->addThumbnailToResult($result, $fileName, $uploadData, $compressionResult, $processedFilePath);
-                        } else if (strpos($endpoint, '/v1/') !== false && $this->isStrategyNotFound($data)) {
-                            // 兼容 7bu: 策略不存在时拉取策略并重试一次
-                            $sid = $this->fetchFirstStrategyIdV1();
-                            if ($sid) {
-                                $postData['strategy_id'] = $sid;
-                                $response = $this->makeRequest($url, 'POST', $headers, $postData);
-                                $data = json_decode($response, true);
-                                if ($data && isset($data['status']) && $data['status'] === true && isset($data['data'])) {
-                                    $uploadData = $data['data'];
-                                    $urlOut = '';
-                                    if (isset($uploadData['links']['url'])) {
-                                        $urlOut = $uploadData['links']['url'];
-                                    } elseif (isset($uploadData['pathname'])) {
-                                        $baseUrl = rtrim($this->lskyConfig['url'], '/');
-                                        $urlOut = $baseUrl . '/' . $uploadData['pathname'];
-                                    }
-                                    $result = [
-                                        'ok' => true,
-                                        'url' => $urlOut,
-                                        'name' => $uploadData['name'] ?? $fileName,
-                                        'key' => $uploadData['key'] ?? ($uploadData['id'] ?? ''),
-                                        'size' => $uploadData['size'] ?? filesize($filePath)
-                                    ];
-                                    return $this->addThumbnailToResult($result, $fileName, $uploadData, $compressionResult, $processedFilePath);
-                                }
-                            }
-                        }
-                    } catch (\Exception $e) {
-                        continue;
-                    }
+            $result = $this->attemptStandardUpload($baseUrl, $uploadEndpoints, $paramNames, $processedFilePath, $mimeType, $safeFileName, $filePath, $compressionResult);
+            if ($result !== null) {
+                return $result;
+            }
+
+            $result = $this->attemptV1AuthVariantsUpload($baseUrl, $uploadEndpoints, $processedFilePath, $mimeType, $safeFileName, $filePath, $compressionResult);
+            if ($result !== null) {
+                return $result;
+            }
+
+            $result = $this->attemptCompatibilityUpload($baseUrl, $uploadEndpoints, $paramNames, $processedFilePath, $mimeType, $safeFileName, $filePath, $compressionResult);
+            if ($result !== null) {
+                if (!empty($result['ok'])) {
+                    return $result;
                 }
+                \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::cleanupTempFile($processedFilePath);
+                return $result;
             }
             
-            // 如果简单上传失败，尝试V1特殊认证和参数组合（参考官方V1接口）
-            foreach ($uploadEndpoints as $endpoint) {
-                if (strpos($endpoint, '/v1/') !== false) {
-                    // 针对新版本兰空图床的特殊V1处理
-                    // 尝试不同的认证方式和参数组合
-                    $authVariants = [
-                        ['Authorization: Bearer ' . $this->lskyConfig['token']],
-                        ['Authorization: ' . $this->lskyConfig['token']],
-                        ['Token: ' . $this->lskyConfig['token']],
-                    ];
-                    
-                    foreach ($authVariants as $authHeaders) {
-                        try {
-                            $url = $baseUrl . $endpoint;
-                            $curlFile = new \CURLFile($processedFilePath, $mimeType, basename($processedFilePath));
-                            
-                            // 尝试多种V1参数组合以解决新版本"服务异常"问题
-                            $paramVariants = [
-                                // 完整参数组合
-                                [
-                                    'file' => $curlFile,
-                                    'strategy_id' => $this->resolveStorageId(true),
-                                    'permission' => 1,
-                                    'album_id' => 0
-                                ],
-                                // 最小参数组合
-                                [
-                                    'file' => $curlFile,
-                                    'strategy_id' => $this->resolveStorageId(true)
-                                ],
-                                // 无相册ID
-                                [
-                                    'file' => $curlFile,
-                                    'strategy_id' => $this->resolveStorageId(true),
-                                    'permission' => 1
-                                ],
-                                // 尝试字符串形式的permission
-                                [
-                                    'file' => $curlFile,
-                                    'strategy_id' => $this->resolveStorageId(true),
-                                    'permission' => '1',
-                                    'album_id' => '0'
-                                ]
-                            ];
-                            
-                            foreach ($paramVariants as $index => $postData) {
-                                
-                                $headers = array_merge($authHeaders, ['Expect:']);
-                                $response = $this->makeRequest($url, 'POST', $headers, $postData);
-                                $data = json_decode($response, true);
-                                
-                                if ($data && isset($data['status']) && $data['status'] === true && isset($data['data'])) {
-                                    $uploadData = $data['data'];
-                                    
-                                    $url = '';
-                                    if (isset($uploadData['links']['url'])) {
-                                        $url = $uploadData['links']['url'];
-                                    } elseif (isset($uploadData['pathname'])) {
-                                        $baseUrl = rtrim($this->lskyConfig['url'], '/');
-                                        $url = $baseUrl . '/' . $uploadData['pathname'];
-                                    }
-                                    
-                                    $result = [
-                                        'ok' => true,
-                                        'url' => $url,
-                                        'name' => $uploadData['name'] ?? $fileName,
-                                        'key' => $uploadData['key'] ?? ($uploadData['id'] ?? ''),
-                                        'size' => $uploadData['size'] ?? filesize($filePath)
-                                    ];
-                                    return $this->addThumbnailToResult($result, $fileName, $uploadData, $compressionResult, $processedFilePath);
-                                } else {
-                                }
-                            }
-                        } catch (\Exception $e) {
-                            continue;
-                        }
-                    }
-                }
-            }
-            
-            foreach ($uploadEndpoints as $endpoint) {
-                foreach ($paramNames as $paramName) {
-                    try {
-                        $url = $baseUrl . $endpoint;
-                        
-                        // 兰空图床可能需要不同的参数名，尝试多种方式
-                        // 确保文件路径有效且可读
-                        if (!file_exists($filePath) || !is_readable($filePath)) {
-                            continue;
-                        }
-                        
-                        // 创建CURLFile对象，确保文件名是UTF-8编码
-                        $safeFileName = basename($fileName);
-                        $curlFile = new \CURLFile($processedFilePath, $mimeType, $safeFileName);
-                        
-                        $postData = [
-                            $paramName => $curlFile
-                        ];
-                        
-                        // 调试信息：记录CURLFile详情
-                        
-                        // 根据官方API文档设置正确的参数
-                        if (strpos($endpoint, '/v1/') !== false) {
-                            // V1 API参数（根据官方文档）
-                            // 确保始终包含strategy_id参数（新版本兰空图床可能需要）
-                            $postData['strategy_id'] = (string) $this->resolveStorageId(true);
-                            if (!empty($this->lskyConfig['albumId'])) {
-                                $postData['album_id'] = $this->lskyConfig['albumId'];
-                            }
-                            // V1可选参数
-                            $postData['permission'] = 1; // 1=公开，0=私有
-                        } elseif (strpos($endpoint, '/v2/') !== false) {
-                            // V2 API参数（根据官方文档，修复数据类型和存储策略ID）
-                            $postData['storage_id'] = (int) $this->resolveStorageId();
-                            if (!empty($this->lskyConfig['albumId'])) {
-                                $postData['album_id'] = intval($this->lskyConfig['albumId']);
-                            }
-                            // V2可选参数：修复布尔值类型
-                            $postData['is_public'] = true; // 布尔值，不是字符串
-                            
-                        }
-                        
-                        // 对V2接口再额外尝试一次显式Bearer头
-                        $headers = ['Expect:'];
-                        if (strpos($endpoint, '/v2/') !== false) {
-                            $headers[] = $this->buildAuthHeader($this->lskyConfig['token']);
-                        }
-                        $response = $this->makeRequest($url, 'POST', $headers, $postData);
-                        
-                        
-                        $data = json_decode($response, true);
-                        
-                        if (!$data || !isset($data['status'])) {
-                            continue;
-                        }
-                        
-                        // 兼容v1和v2的不同status格式
-                        $isSuccess = ($data['status'] === true || $data['status'] === 'success');
-                        if ($isSuccess) {
-                            // 上传成功
-                            if (!isset($data['data'])) {
-                                continue;
-                            }
-                            
-                            $uploadData = $data['data'];
-                            
-                            
-                            // 根据官方API文档解析URL
-                            $url = '';
-                            if (isset($uploadData['links']['url'])) {
-                                // V1 API格式：data.links.url
-                                $url = $uploadData['links']['url'];
-                            } elseif (isset($uploadData['public_url'])) {
-                                // V2 API格式：data.public_url
-                                $url = $uploadData['public_url'];
-                            } elseif (isset($uploadData['pathname'])) {
-                                // 备用：根据pathname构建URL
-                                $baseUrl = rtrim($this->lskyConfig['url'], '/');
-                                $url = $baseUrl . '/' . $uploadData['pathname'];
-                            } elseif (isset($uploadData['url'])) {
-                                // 直接URL
-                                $url = $uploadData['url'];
-                            }
-                            
-                            $result = [
-                                'ok' => true,
-                                'url' => $url,
-                                'name' => $uploadData['name'] ?? $uploadData['filename'] ?? $fileName,
-                                'key' => $uploadData['key'] ?? $uploadData['id'] ?? '',
-                                'size' => $uploadData['size'] ?? filesize($filePath)
-                            ];
-                            return $this->addThumbnailToResult($result, $fileName, $uploadData, $compressionResult, $processedFilePath);
-                        } else {
-                            $errorMsg = isset($data['message']) ? $data['message'] : 'Upload failed';
-                            
-                            // 如果是参数相关错误，尝试下一个参数名
-                            if (strpos($errorMsg, 'file 不能为空') !== false || 
-                                strpos($errorMsg, 'image 不能为空') !== false ||
-                                strpos($errorMsg, '服务异常') !== false ||
-                                strpos($errorMsg, 'HTTP 422') !== false) {
-                                continue; // 尝试下一个参数名或端点
-                            } else {
-                                // 其他类型的错误，可能是权限或配置问题
-                                return ['ok' => false, 'msg' => $errorMsg];
-                            }
-                        }
-                    } catch (\Exception $e) {
-                        
-                        // 如果是HTTP 419 CSRF错误，尝试获取CSRF token并重试
-                        if (strpos($e->getMessage(), 'HTTP 419') !== false && !isset($postData['_token'])) {
-                            // HTTP 419 CSRF error, trying to get CSRF token
-                            $csrfToken = $this->getCSRFToken();
-                            if ($csrfToken) {
-                                try {
-                                    $postData['_token'] = $csrfToken;
-                                    // error_log("Lsky: Retrying with CSRF token: $csrfToken");
-                                    
-                                    $response = $this->makeRequest($url, 'POST', [], $postData);
-                                    $data = json_decode($response, true);
-                                    
-                                    if ($data && isset($data['status']) && ($data['status'] === true || $data['status'] === 'success') && isset($data['data'])) {
-                                        $uploadData = $data['data'];
-                                        // error_log("Lsky: CSRF retry SUCCESS via $endpoint with $paramName");
-                                        
-                                        // 根据官方API文档解析URL
-                                        $url = '';
-                                        if (isset($uploadData['links']['url'])) {
-                                            // V1 API格式：data.links.url
-                                            $url = $uploadData['links']['url'];
-                                        } elseif (isset($uploadData['public_url'])) {
-                                            // V2 API格式：data.public_url
-                                            $url = $uploadData['public_url'];
-                                        } elseif (isset($uploadData['pathname'])) {
-                                            // 备用：根据pathname构建URL
-                                            $baseUrl = rtrim($this->lskyConfig['url'], '/');
-                                            $url = $baseUrl . '/' . $uploadData['pathname'];
-                                        } elseif (isset($uploadData['url'])) {
-                                            $url = $uploadData['url'];
-                                        }
-                                        
-                                        $result = [
-                                            'ok' => true,
-                                            'url' => $url,
-                                            'name' => $uploadData['name'] ?? $uploadData['filename'] ?? $fileName,
-                                            'key' => $uploadData['key'] ?? $uploadData['id'] ?? '',
-                                            'size' => $uploadData['size'] ?? filesize($filePath)
-                                        ];
-                                        return $this->addThumbnailToResult($result, $fileName, $uploadData, $compressionResult, $processedFilePath);
-                                    }
-                                } catch (\Exception $e2) {
-                                    // error_log("Lsky: CSRF retry failed: " . $e2->getMessage());
-                                }
-                            }
-                        }
-                        
-                        // 如果是HTTP 404或500错误，继续尝试下一个组合
-                        if (strpos($e->getMessage(), 'HTTP 404') !== false || 
-                            strpos($e->getMessage(), 'HTTP 500') !== false) {
-                            continue;
-                        }
-                        
-                        // 其他错误，继续下一个组合
-                        continue;
-                    }
-                }
-            }
-            
-            // 如果所有基本端点都失败，返回通用错误
+            \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::cleanupTempFile($processedFilePath);
             return ['ok' => false, 'msg' => 'All upload endpoints failed'];
             
         } catch (\Exception $e) {
@@ -1251,6 +923,250 @@ class LskyService
             // error_log('Lsky Upload Error: ' . $e->getMessage());
             return ['ok' => false, 'msg' => 'Upload failed: ' . $e->getMessage()];
         }
+    }
+
+    private function attemptStandardUpload($baseUrl, $uploadEndpoints, $paramNames, $processedFilePath, $mimeType, $safeFileName, $filePath, $compressionResult)
+    {
+        foreach ($uploadEndpoints as $endpoint) {
+            foreach ($paramNames as $paramName) {
+                try {
+                    $url = $baseUrl . $endpoint;
+                    $curlFile = new \CURLFile($processedFilePath, $mimeType, basename($processedFilePath));
+                    $postData = $this->buildStandardPostData($endpoint, $paramName, $curlFile);
+                    $headers = ['Expect:'];
+                    $data = $this->decodeUploadResponse($url, $headers, $postData);
+                    $result = $this->buildResultIfSuccessful($data, $safeFileName, $filePath, $compressionResult, $processedFilePath);
+                    if ($result !== null) {
+                        return $result;
+                    }
+
+                    if (strpos($endpoint, '/v1/') !== false && $this->isStrategyNotFound($data)) {
+                        $sid = $this->fetchFirstStrategyIdV1();
+                        if ($sid) {
+                            $postData['strategy_id'] = $sid;
+                            $data = $this->decodeUploadResponse($url, $headers, $postData);
+                            $result = $this->buildResultIfSuccessful($data, $safeFileName, $filePath, $compressionResult, $processedFilePath);
+                            if ($result !== null) {
+                                return $result;
+                            }
+                        }
+                    }
+                } catch (\Exception $e) {
+                    continue;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function attemptV1AuthVariantsUpload($baseUrl, $uploadEndpoints, $processedFilePath, $mimeType, $safeFileName, $filePath, $compressionResult)
+    {
+        foreach ($uploadEndpoints as $endpoint) {
+            if (strpos($endpoint, '/v1/') === false) {
+                continue;
+            }
+
+            $authVariants = $this->getV1AuthVariants();
+
+            foreach ($authVariants as $authHeaders) {
+                try {
+                    $url = $baseUrl . $endpoint;
+                    $curlFile = new \CURLFile($processedFilePath, $mimeType, basename($processedFilePath));
+                    $paramVariants = $this->buildV1AuthParamVariants($curlFile);
+
+                    foreach ($paramVariants as $postData) {
+                        $headers = array_merge($authHeaders, ['Expect:']);
+                        $data = $this->decodeUploadResponse($url, $headers, $postData);
+                        $result = $this->buildResultIfSuccessful($data, $safeFileName, $filePath, $compressionResult, $processedFilePath);
+                        if ($result !== null) {
+                            return $result;
+                        }
+                    }
+                } catch (\Exception $e) {
+                    continue;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function decodeUploadResponse($url, $headers, $postData)
+    {
+        $response = $this->makeRequest($url, 'POST', $headers, $postData);
+        return json_decode($response, true);
+    }
+
+    private function buildResultIfSuccessful($data, $safeFileName, $filePath, $compressionResult, $processedFilePath)
+    {
+        if (!$this->isSuccessfulUploadResponse($data)) {
+            return null;
+        }
+
+        return $this->buildLskyUploadResult($data['data'], $safeFileName, $filePath, $compressionResult, $processedFilePath);
+    }
+
+    private function buildStandardPostData($endpoint, $paramName, $curlFile)
+    {
+        $postData = [$paramName => $curlFile];
+
+        if (strpos($endpoint, '/v1/') !== false) {
+            $postData['permission'] = 1;
+            $postData['strategy_id'] = $this->resolveStorageId(true);
+            if (!empty($this->lskyConfig['albumId'])) {
+                $postData['album_id'] = $this->lskyConfig['albumId'];
+            }
+        } elseif (strpos($endpoint, '/v2/') !== false) {
+            $postData['storage_id'] = (int)$this->resolveStorageId();
+            if (!empty($this->lskyConfig['albumId'])) {
+                $postData['album_id'] = intval($this->lskyConfig['albumId']);
+            }
+            $postData['is_public'] = true;
+            $postData['is_remove_exif'] = true;
+        }
+
+        return $postData;
+    }
+
+    private function getV1AuthVariants()
+    {
+        return [
+            ['Authorization: Bearer ' . $this->lskyConfig['token']],
+            ['Authorization: ' . $this->lskyConfig['token']],
+            ['Token: ' . $this->lskyConfig['token']],
+        ];
+    }
+
+    private function buildV1AuthParamVariants($curlFile)
+    {
+        $strategyId = $this->resolveStorageId(true);
+
+        return [
+            ['file' => $curlFile, 'strategy_id' => $strategyId, 'permission' => 1, 'album_id' => 0],
+            ['file' => $curlFile, 'strategy_id' => $strategyId],
+            ['file' => $curlFile, 'strategy_id' => $strategyId, 'permission' => 1],
+            ['file' => $curlFile, 'strategy_id' => $strategyId, 'permission' => '1', 'album_id' => '0']
+        ];
+    }
+
+    private function attemptCompatibilityUpload($baseUrl, $uploadEndpoints, $paramNames, $processedFilePath, $mimeType, $safeFileName, $filePath, $compressionResult)
+    {
+        foreach ($uploadEndpoints as $endpoint) {
+            foreach ($paramNames as $paramName) {
+                try {
+                    if (!file_exists($filePath) || !is_readable($filePath)) {
+                        continue;
+                    }
+
+                    $url = $baseUrl . $endpoint;
+                    $curlFile = new \CURLFile($processedFilePath, $mimeType, $safeFileName);
+                    $postData = $this->buildCompatibilityPostData($endpoint, $paramName, $curlFile);
+                    $headers = $this->buildCompatibilityHeaders($endpoint);
+
+                    $response = $this->makeRequest($url, 'POST', $headers, $postData);
+                    $data = json_decode($response, true);
+
+                    $processed = $this->processCompatibilityResponse($data, $safeFileName, $filePath, $compressionResult, $processedFilePath);
+                    if ($processed['continue']) {
+                        continue;
+                    }
+                    return $processed['result'];
+                } catch (\Exception $e) {
+                    $retryResult = $this->attemptCompatibilityCsrfRetry($e, $url, $postData, $safeFileName, $filePath, $compressionResult, $processedFilePath);
+                    if ($retryResult !== null) {
+                        return $retryResult;
+                    }
+
+                    if (strpos($e->getMessage(), 'HTTP 404') !== false || strpos($e->getMessage(), 'HTTP 500') !== false) {
+                        continue;
+                    }
+
+                    continue;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function buildCompatibilityPostData($endpoint, $paramName, $curlFile)
+    {
+        $postData = [$paramName => $curlFile];
+
+        if (strpos($endpoint, '/v1/') !== false) {
+            $postData['strategy_id'] = (string)$this->resolveStorageId(true);
+            if (!empty($this->lskyConfig['albumId'])) {
+                $postData['album_id'] = $this->lskyConfig['albumId'];
+            }
+            $postData['permission'] = 1;
+        } elseif (strpos($endpoint, '/v2/') !== false) {
+            $postData['storage_id'] = (int)$this->resolveStorageId();
+            if (!empty($this->lskyConfig['albumId'])) {
+                $postData['album_id'] = intval($this->lskyConfig['albumId']);
+            }
+            $postData['is_public'] = true;
+        }
+
+        return $postData;
+    }
+
+    private function buildCompatibilityHeaders($endpoint)
+    {
+        $headers = ['Expect:'];
+        if (strpos($endpoint, '/v2/') !== false) {
+            $headers[] = $this->buildAuthHeader($this->lskyConfig['token']);
+        }
+        return $headers;
+    }
+
+    private function processCompatibilityResponse($data, $safeFileName, $filePath, $compressionResult, $processedFilePath)
+    {
+        if (!$this->hasUploadStatus($data)) {
+            return ['continue' => true, 'result' => null];
+        }
+
+        if ($this->isUploadStatusSuccess($data['status'])) {
+            if (!isset($data['data'])) {
+                return ['continue' => true, 'result' => null];
+            }
+
+            return [
+                'continue' => false,
+                'result' => $this->buildLskyUploadResult($data['data'], $safeFileName, $filePath, $compressionResult, $processedFilePath)
+            ];
+        }
+
+        $errorMsg = isset($data['message']) ? $data['message'] : 'Upload failed';
+        if (strpos($errorMsg, 'file 不能为空') !== false || strpos($errorMsg, 'image 不能为空') !== false || strpos($errorMsg, '服务异常') !== false || strpos($errorMsg, 'HTTP 422') !== false) {
+            return ['continue' => true, 'result' => null];
+        }
+
+        return ['continue' => false, 'result' => ['ok' => false, 'msg' => $errorMsg]];
+    }
+
+    private function attemptCompatibilityCsrfRetry($exception, $url, $postData, $safeFileName, $filePath, $compressionResult, $processedFilePath)
+    {
+        if (strpos($exception->getMessage(), 'HTTP 419') === false || isset($postData['_token'])) {
+            return null;
+        }
+
+        $csrfToken = $this->getCSRFToken();
+        if (!$csrfToken) {
+            return null;
+        }
+
+        try {
+            $postData['_token'] = $csrfToken;
+            $response = $this->makeRequest($url, 'POST', [], $postData);
+            $data = json_decode($response, true);
+            if ($this->isSuccessfulUploadResponse($data)) {
+                return $this->buildLskyUploadResult($data['data'], $safeFileName, $filePath, $compressionResult, $processedFilePath);
+            }
+        } catch (\Exception $e2) {
+        }
+
+        return null;
     }
 
     private function makeRequest($url, $method = 'GET', $headers = [], $data = null)
@@ -1281,49 +1197,32 @@ class LskyService
             $headers = array_merge($defaultHeaders, $headers);
         }
 
-        $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $url,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => $isFileUpload ? 180 : 30,
-            CURLOPT_CUSTOMREQUEST => $method,
-            CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_SSL_VERIFYHOST => false,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 10,
-            CURLOPT_ENCODING => '',
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            CURLOPT_VERBOSE => false
-        ]);
-
-        if ($method !== 'GET' && $data !== null) {
-            if ($method === 'POST' && $isFileUpload) {
-                $processedData = [];
-                foreach ($data as $key => $value) {
-                    if ($value instanceof \CURLFile) {
-                        $processedData[$key] = $value;
-                    } elseif (is_bool($value)) {
-                        $processedData[$key] = $value ? '1' : '0';
-                    } else {
-                        $processedData[$key] = $value;
-                    }
-                }
-
-                curl_setopt($ch, CURLOPT_POST, true);
-                curl_setopt($ch, CURLOPT_POSTFIELDS, $processedData);
-            } else {
-                curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
-                if ($method === 'POST') {
-                    curl_setopt($ch, CURLOPT_POST, true);
+        $payload = $data;
+        if ($method === 'POST' && $isFileUpload && is_array($data)) {
+            $processedData = [];
+            foreach ($data as $key => $value) {
+                if ($value instanceof \CURLFile) {
+                    $processedData[$key] = $value;
+                } elseif (is_bool($value)) {
+                    $processedData[$key] = $value ? '1' : '0';
+                } else {
+                    $processedData[$key] = $value;
                 }
             }
+            $payload = $processedData;
         }
 
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-        curl_close($ch);
+        $result = HttpClient::request($url, $method, $headers, $payload, [
+            'timeout' => $isFileUpload ? 180 : 30,
+            'connect_timeout' => 10,
+            'verify_ssl' => false,
+            'follow_location' => true,
+            'max_redirs' => 10
+        ]);
+
+        $response = (string)($result['body'] ?? '');
+        $httpCode = (int)($result['status'] ?? 0);
+        $error = (string)($result['error'] ?? '');
 
         if ($response === false || !empty($error)) {
             throw new \Exception('CURL Error: ' . ($error ?: 'Unknown network error'));
@@ -1394,14 +1293,43 @@ class LskyService
         if (!is_array($data)) return false;
         $msg = isset($data['message']) ? (string)$data['message'] : '';
         // 兼容多种提示：策略不存在 / 选定的策略不存在 / strategy not found
-        if ($msg && (mb_strpos($msg, '策略不存在') !== false || stripos($msg, 'strategy') !== false)) {
+        if ($msg && ($this->stringContains($msg, '策略不存在') || stripos($msg, 'strategy') !== false)) {
             return true;
         }
         if (isset($data['errors']) && is_array($data['errors'])) {
             $flat = json_encode($data['errors'], JSON_UNESCAPED_UNICODE);
-            return (mb_strpos($flat, '策略') !== false || stripos($flat, 'strategy') !== false);
+            return ($this->stringContains($flat, '策略') || stripos($flat, 'strategy') !== false);
         }
         return false;
+    }
+
+    private function stringContains($haystack, $needle)
+    {
+        $haystack = (string)$haystack;
+        $needle = (string)$needle;
+        if ($needle === '') {
+            return true;
+        }
+
+        if (function_exists('mb_strpos')) {
+            return mb_strpos($haystack, $needle) !== false;
+        }
+
+        return strpos($haystack, $needle) !== false;
+    }
+
+    private function normalizeBaseUrl($url)
+    {
+        $url = trim((string)$url);
+        if ($url === '') {
+            return '';
+        }
+
+        if (!preg_match('#^https?://#i', $url)) {
+            $url = 'https://' . ltrim($url, '/');
+        }
+
+        return rtrim($url, '/');
     }
     
     /**
@@ -1620,6 +1548,66 @@ class LskyService
         } else {
             return $originalUrl . '?' . $thumbParam;
         }
+    }
+
+    private function resolveLskyUploadUrl(array $uploadData)
+    {
+        if (isset($uploadData['links']['url'])) {
+            return $uploadData['links']['url'];
+        }
+
+        if (isset($uploadData['public_url'])) {
+            return $uploadData['public_url'];
+        }
+
+        if (isset($uploadData['pathname'])) {
+            $baseUrl = rtrim($this->lskyConfig['url'], '/');
+            return $baseUrl . '/' . ltrim((string)$uploadData['pathname'], '/');
+        }
+
+        if (isset($uploadData['url'])) {
+            return $uploadData['url'];
+        }
+
+        return '';
+    }
+
+    private function hasUploadStatus($data)
+    {
+        return is_array($data) && array_key_exists('status', $data);
+    }
+
+    private function isUploadStatusSuccess($status)
+    {
+        return $status === true || $status === 'success';
+    }
+
+    private function isSuccessfulUploadResponse($data)
+    {
+        if (!$this->hasUploadStatus($data) || !isset($data['data']) || !is_array($data['data'])) {
+            return false;
+        }
+
+        return $this->isUploadStatusSuccess($data['status']);
+    }
+
+    private function buildLskyUploadResult(array $uploadData, $fallbackFileName, $sourceFilePath, $compressionResult, $processedFilePath)
+    {
+        $size = isset($uploadData['size']) ? (int)$uploadData['size'] : 0;
+        if ($size <= 0) {
+            $resolvedSize = @filesize($sourceFilePath);
+            $size = $resolvedSize !== false ? (int)$resolvedSize : 0;
+        }
+
+        $result = [
+            'ok' => true,
+            'url' => $this->resolveLskyUploadUrl($uploadData),
+            'name' => $uploadData['name'] ?? ($uploadData['filename'] ?? $fallbackFileName),
+            'key' => $uploadData['key'] ?? ($uploadData['id'] ?? ''),
+            'size' => $size
+        ];
+
+        return $this->addThumbnailToResult($result, $fallbackFileName, $uploadData, $compressionResult, $processedFilePath);
     }
 
     /**

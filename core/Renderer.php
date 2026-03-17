@@ -126,14 +126,12 @@ class Renderer
         echo '<div class="temf-actions-bar">';
         echo '<div class="temf-select-group">';
         if ($storage === 'multi') {
-            // 多模式：渲染所有选择器，由JavaScript控制显示/隐藏
+            // 多模式：渲染选择器，由JavaScript控制显示/隐藏
             echo '<div class="temf-select-holder" data-select="temf-dir"><select id="temf-dir" class="temf-native-select" data-initial-hidden="true"></select></div>';
-            echo '<div class="temf-select-holder" data-select="temf-subdir"><select id="temf-subdir" class="temf-native-select" data-initial-hidden="true"></select></div>';
             echo '<div class="temf-select-holder" data-select="temf-year"><select id="temf-year" class="temf-native-select" data-initial-hidden="true"></select></div>';
             echo '<div class="temf-select-holder" data-select="temf-month"><select id="temf-month" class="temf-native-select" data-initial-hidden="true"></select></div>';
         } elseif ($storage === 'cos' || $storage === 'oss' || $storage === 'upyun' || $storage === 'lsky') {
             echo '<div class="temf-select-holder" data-select="temf-dir"><select id="temf-dir" class="temf-native-select"></select></div>';
-            echo '<div class="temf-select-holder" data-select="temf-subdir"><select id="temf-subdir" class="temf-native-select"></select></div>';
         } else {
             echo '<div class="temf-select-holder" data-select="temf-year"><select id="temf-year" class="temf-native-select"></select></div>';
             echo '<div class="temf-select-holder" data-select="temf-month"><select id="temf-month" class="temf-native-select"></select></div>';
@@ -143,10 +141,12 @@ class Renderer
         echo '<div class="temf-button-group">';
         echo '<button type="button" class="btn btn-xs" id="temf-upload" title="' . _t('支持多选上传') . '">' . _t('上传图片') . '</button>';
         echo '<button type="button" class="btn btn-xs primary" id="temf-insert-selected" disabled>' . _t('插入所选') . '</button>';
-        echo '<button type="button" class="btn btn-xs" id="temf-close" aria-label="' . _t('关闭') . '">×</button>';
+        echo '<button type="button" class="btn btn-xs" id="temf-close" aria-label="' . _t('关闭') . '">' . _t('关闭') . '</button>';
         echo '</div>';
         echo '</div>';
         echo '</div>';
+
+        echo '<div id="temf-breadcrumb" class="temf-breadcrumb" style="display:none;"></div>';
         
         echo '<div class="temf-body">';
         $this->renderContent($storage);
@@ -240,20 +240,24 @@ class Renderer
         $thumbSize = $this->config->get('thumbSize', 120);
         
         echo '<style>';
-        echo '#temediafolder{margin-top:12px;padding:20px;border:1px solid rgba(0,0,0,.12);border-radius:3px;background:#f9f9f9;color:#1f1f1f;font-size:.92857em;}';
+        echo '#temediafolder{display:block;margin:0 0 10px 0;padding:0;border:none;background:transparent;color:#1f1f1f;font-size:.92857em;box-sizing:border-box;}';
         echo '#temediafolder .temf-toolbar{display:flex;justify-content:center;gap:10px}';
         echo '#temf-open{min-width:140px;padding:10px 18px;border-radius:3px;font-size:14px;font-weight:500;}';
+        echo '#temediafolder.temf-inline{margin:12px 0 10px 0;padding:16px;border-radius:3px;}';
+        echo '#temediafolder.temf-floating{position:fixed;top:72px;right:24px;z-index:9998;background:rgba(255,255,255,0.96);padding:6px 8px;border:1px solid rgba(0,0,0,.14);border-radius:6px;box-shadow:0 10px 24px rgba(0,0,0,.18);}';
+        echo '#temediafolder.temf-floating .temf-toolbar{justify-content:flex-start;}';
         echo '.temf-modal{position:fixed;inset:0;display:none;z-index:9999}';
         echo '.temf-modal.open{display:block}';
         echo '.temf-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.4)}';
-        echo '.temf-dialog{position:absolute;left:50%;top:10%;transform:translateX(-50%);background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:3px;box-shadow:0 18px 48px rgba(0,0,0,.16);max-width:1024px;width:92%;max-height:88vh;display:flex;flex-direction:column;}';
-        echo '.temf-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:nowrap;padding:14px 18px;border-bottom:1px solid rgba(0,0,0,.08);gap:12px;background:#f5f5f5;border-top-left-radius:3px;border-top-right-radius:3px;}';
-        echo '.temf-actions-bar{display:flex;gap:12px;align-items:center;flex-shrink:0;flex-wrap:nowrap;justify-content:space-between;}';
+        echo '.temf-dialog{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:3px;box-shadow:0 18px 48px rgba(0,0,0,.16);max-width:1024px;width:min(92%,1024px);max-height:min(88vh,900px);display:flex;flex-direction:column;}';
+        echo '.temf-header{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:nowrap;padding:14px 18px;border-bottom:1px solid rgba(0,0,0,.08);gap:12px;background:#f5f5f5;border-top-left-radius:3px;border-top-right-radius:3px;}';
+        echo '.temf-actions-bar{display:flex;gap:12px;align-items:flex-start;flex-shrink:0;flex-wrap:nowrap;justify-content:flex-end;margin-left:auto;}';
         echo '.temf-select-group,.temf-button-group{display:flex;gap:10px;align-items:center;flex-wrap:nowrap;}';
-        echo '.temf-select-holder{position:relative;flex:1 1 150px;min-width:130px;display:flex;}';
+        echo '.temf-select-holder{position:relative;flex:0 1 170px;min-width:130px;display:flex;}';
         echo '.temf-select-holder.hidden{display:none;}';
-        echo '.temf-select-holder[data-select="temf-month"]{flex:0 1 110px;}';
-        echo '.temf-button-group .btn{flex:0 0 auto;}';
+        echo '.temf-select-holder[data-select="temf-month"]{flex:0 0 110px;}';
+        echo '.temf-button-group .btn{flex:0 0 auto;min-width:104px;}';
+        echo '#temf-close{min-width:84px;}';
         echo '.temf-native-select{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none;}';
         echo '.temf-select-trigger{display:flex;align-items:center;justify-content:flex-start;width:100%;border:1px solid rgba(0,0,0,.18);background:#fff;padding:8px 42px 8px 14px;border-radius:6px;color:#1f1f1f;font-size:13px;min-height:38px;transition:border-color .2s ease, box-shadow .2s ease, color .2s ease;cursor:pointer;text-align:left;gap:12px;position:relative;}';
         echo '.temf-select-holder[data-disabled="true"] .temf-select-trigger{opacity:.6;cursor:not-allowed;}';
@@ -272,12 +276,18 @@ class Renderer
         echo '.temf-select-empty{padding:10px 14px;font-size:13px;color:#666;}';
         echo '.temf-thumb img{background:#f2f2f2}';
         echo '.temf-thumb img[referrerpolicy]{referrerpolicy:no-referrer}';
-        echo '.temf-body{position:relative;padding:18px;overflow:auto;flex:1 1 auto;background:#f9f9f9;border-bottom-left-radius:3px;border-bottom-right-radius:3px;scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.35) transparent;}';
+        echo '.temf-body{position:relative;padding:18px;overflow:auto;flex:1 1 auto;background:#f9f9f9;border-bottom-left-radius:3px;border-bottom-right-radius:3px;scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.35) transparent;min-height:220px;}';
+        echo '.temf-body > .description{margin:0;min-height:220px;display:flex;align-items:center;justify-content:center;text-align:center;color:#666;font-size:13px;line-height:1.6;padding:0 8px;}';
         echo '.temf-body::-webkit-scrollbar{width:6px;height:6px;}';
         echo '.temf-body::-webkit-scrollbar-track{background:transparent;}';
         echo '.temf-body::-webkit-scrollbar-thumb{background:rgba(0,0,0,.35);border-radius:3px;}';
         echo '.temf-grid{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(' . $thumbSize . 'px,1fr));gap:12px;contain:content}';
         echo '.temf-item{border:1px solid rgba(0,0,0,.12);border-radius:3px;background:#fff;display:flex;flex-direction:column;overflow:hidden;transition:border-color .18s ease,background-color .18s ease;}';
+        echo '.temf-folder-item{cursor:pointer;min-height:120px;justify-content:center;align-items:center;text-align:center;padding:14px;border-style:dashed;}';
+        echo '.temf-folder-item:hover{border-color:rgba(0,0,0,.45);background:#f7f7f7;}';
+        echo '.temf-folder-icon{width:42px;height:30px;background:#d9d9d9;border-radius:5px;position:relative;margin-bottom:10px;}';
+        echo '.temf-folder-icon:before{content:"";position:absolute;left:4px;top:-7px;width:18px;height:10px;background:#d9d9d9;border-top-left-radius:4px;border-top-right-radius:4px;}';
+        echo '.temf-folder-name{font-size:12px;font-weight:600;color:#1f1f1f;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}';
         echo '.temf-thumb{position:relative;width:100%;background:#f0f0f0;contain:paint}';
         echo '.temf-thumb:before{content:"";display:block;padding-top:100%}';
         echo '.temf-item:hover{border-color:rgba(0,0,0,.28);background:#fdfdfd;}';
@@ -294,7 +304,6 @@ class Renderer
         echo '#temediafolder .btn.primary,.temf-dialog .btn.primary{background:#1f1f1f;border-color:#000;color:#fff;box-shadow:none;}';
         echo '#temediafolder .btn.primary:hover,.temf-dialog .btn.primary:hover{background:#000;border-color:#000;color:#fff;}';
         echo '#temediafolder .btn:disabled,.temf-dialog .btn:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}';
-        echo '// 图片懒加载样式 - loading.gif 在容器内居中显示 30px';
         echo '.temf-lazy-img{transition:opacity 0.3s ease-in-out}';
         echo '.temf-lazy-img:not(.temf-loaded){width:30px !important;height:30px !important;max-width:30px !important;max-height:30px !important;object-fit:contain !important;left:50% !important;top:50% !important;transform:translate(-50%, -50%) !important;border:none !important}';
         echo '.temf-lazy-img.temf-loading{opacity:1}';
@@ -372,15 +381,43 @@ class Renderer
         echo '.temf-switching-overlay{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,0.96);backdrop-filter:saturate(140%) blur(1px);display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:200px;z-index:10;pointer-events:none}';
         echo '.temf-switching-spinner{width:32px;height:32px;border:3px solid #f3f3f3;border-top:3px solid #555;border-radius:50%;animation:temf-spin 1s linear infinite;margin-bottom:16px}';
         echo '.temf-switching-text{color:#666;font-size:14px;text-align:center}';
+        echo '.temf-breadcrumb{display:flex;align-items:center;gap:6px;padding:6px 18px;border-bottom:1px solid rgba(0,0,0,.06);background:#fafafa;overflow:hidden;white-space:nowrap;min-height:34px;box-sizing:border-box;}';
+        echo '.temf-crumb{border:1px solid rgba(0,0,0,.14);background:#fff;color:#222;border-radius:14px;padding:4px 10px;font-size:12px;line-height:1.2;cursor:pointer;}';
+        echo '.temf-crumb.active{background:#1f1f1f;color:#fff;border-color:#1f1f1f;}';
+        echo '.temf-crumb-sep{color:#888;font-size:11px;user-select:none;}';
+        echo '@media (max-width: 860px){';
+        echo '.temf-dialog{width:min(96%,900px);}';
+        echo '.temf-header{flex-direction:column;align-items:stretch;gap:10px;}';
+        echo '.temf-title-wrapper{width:100%;justify-content:space-between;}';
+        echo '.temf-actions-bar{width:100%;flex-direction:column;align-items:stretch;gap:10px;margin-left:0;}';
+        echo '.temf-select-group,.temf-button-group{width:100%;flex-wrap:wrap;}';
+        echo '.temf-button-group{justify-content:flex-start;}';
+        echo '.temf-button-group .btn{flex:1 1 calc(33.33% - 8px);min-width:0;}';
+        echo '.temf-storage-switcher{left:0;top:calc(100% + 8px);margin-left:0;min-width:180px;max-width:min(80vw,280px);}';
+        echo '}';
         echo '@media (max-width: 640px){';
-        echo '.temf-dialog{width:96%;max-width:96%;top:6%;}';
+        echo '.temf-dialog{width:96%;max-width:96%;max-height:94vh;}';
         echo '.temf-header{flex-direction:column;align-items:stretch;gap:12px;}';
         echo '.temf-title-container,.temf-header>strong{width:100%;text-align:left;}';
         echo '.temf-actions-bar{width:100%;flex-direction:column;gap:10px;}';
-        echo '.temf-select-group,.temf-button-group{width:100%;gap:8px;flex-wrap:nowrap;}';
+        echo '.temf-select-group,.temf-button-group{width:100%;gap:8px;flex-wrap:wrap;}';
         echo '.temf-select-group select{flex:1 1 auto;min-width:0;}';
         echo '.temf-button-group{justify-content:flex-start;}';
         echo '.temf-button-group .btn{flex:1 1 auto;min-width:0;}';
+        echo '#temf-refresh.temf-refresh-button{display:none;}';
+        echo '.temf-breadcrumb{padding:8px 12px;}';
+        echo '.temf-select-holder{flex:1 1 calc(50% - 8px);min-width:0;}';
+        echo '.temf-select-holder[data-select="temf-month"]{flex:1 1 calc(50% - 8px);}';
+        echo '.temf-body{padding:12px;}';
+        echo '.temf-grid{gap:8px;}';
+        echo '.temf-meta{padding:10px 8px;}';
+        echo '}';
+        echo '@media (max-width: 420px){';
+        echo '#temf-refresh.temf-refresh-button{padding:4px 10px;font-size:11px;}';
+        echo '.temf-select-holder{flex:1 1 100%;}';
+        echo '.temf-button-group .btn{padding:8px 10px;font-size:12px;min-height:34px;}';
+        echo '.temf-pagination{gap:8px;padding:10px;}';
+        echo '.temf-pagination .temf-page-info{min-width:0;font-size:12px;}';
         echo '}';
         
         echo '</style>';
