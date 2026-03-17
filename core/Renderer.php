@@ -243,7 +243,7 @@ class Renderer
         echo '#temediafolder{display:block;margin:0 0 10px 0;padding:0;border:none;background:transparent;color:#1f1f1f;font-size:.92857em;box-sizing:border-box;}';
         echo '#temediafolder .temf-toolbar{display:flex;justify-content:center;gap:10px}';
         echo '#temf-open{min-width:140px;padding:10px 18px;border-radius:3px;font-size:14px;font-weight:500;}';
-        echo '#temediafolder.temf-inline{margin:12px 0 10px 0;padding:16px;border-radius:3px;}';
+        echo '#temediafolder.temf-inline{margin:10px 0 14px 0;padding:10px 12px;border:1px solid #e5e5e5;border-radius:4px;background:#fff;}';
         echo '#temediafolder.temf-floating{position:fixed;top:72px;right:24px;z-index:9998;background:rgba(255,255,255,0.96);padding:6px 8px;border:1px solid rgba(0,0,0,.14);border-radius:6px;box-shadow:0 10px 24px rgba(0,0,0,.18);}';
         echo '#temediafolder.temf-floating .temf-toolbar{justify-content:flex-start;}';
         echo '.temf-modal{position:fixed;inset:0;display:none;z-index:9999}';
