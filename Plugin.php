@@ -1,10 +1,10 @@
 <?php
 
 /**
- * 媒体预览（支持本地、腾讯COS、阿里云OSS、又拍云和兰空图床）
+ * 媒体预览（支持本地、腾讯COS、阿里云OSS、缤纷云、又拍云和兰空图床）
  * @package TEMediaFolder
  * @author 森木志
- * @version 3.2.0
+ * @version 3.3.0
  * @link https://github.com/SurGarfield/TEMediaFolder
  */
 
@@ -205,6 +205,10 @@ class Plugin implements PluginInterface
             'temf-oss-upload',
             'temf-oss-delete',
             'temf-oss-rename',
+            'temf-bitiful-list',
+            'temf-bitiful-upload',
+            'temf-bitiful-delete',
+            'temf-bitiful-rename',
             'temf-upyun-list',
             'temf-upyun-upload',
             'temf-upyun-delete',
@@ -222,6 +226,7 @@ class Plugin implements PluginInterface
             'temf-multi-rename',
             'temf-multi-delete',
             'temf-test-upyun',
+            'temf-test-bitiful',
         ];
     }
 

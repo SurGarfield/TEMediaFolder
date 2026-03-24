@@ -12,6 +12,8 @@ class ConfigForm
         self::addCosConfig($form);
         
         self::addOssConfig($form);
+
+        self::addBitifulConfig($form);
         
         self::addUpyunConfig($form);
         
@@ -45,20 +47,19 @@ class ConfigForm
             $uploadDir = $rootDir . DIRECTORY_SEPARATOR . 'usr' . DIRECTORY_SEPARATOR . 'uploads';
             $uploadWritable = @is_dir($uploadDir) ? @is_writable($uploadDir) : @is_writable(dirname($uploadDir));
 
-            $ok = function($b){ return $b ? '<span style="color:#1a7f37">✓</span>' : '<span style="color:#d63638">✗</span>'; };
-
-            // 折叠容器（与高级设置同风格）
             echo '<div class="temf-card temf-collapse-card temf-env-wrap">';
             echo '<details class="temf-collapse">';
             echo '<summary>环境自检</summary>';
             echo '<div class="temf-collapse-body temf-env">';
             echo '<style>
-                .temf-env .temf-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px;margin:6px 0}
-                .temf-env .temf-kv{display:flex;justify-content:space-between;gap:8px;padding:6px 8px;border:1px solid #eee;border-radius:4px;background:#fafafa}
-                .temf-env .temf-badge{display:inline-block;min-width:16px;text-align:center;padding:0 6px;border-radius:10px;font-size:12px}
-                .temf-env .ok{background:#e7f6ed;color:#1a7f37;border:1px solid #c9e7d4}
-                .temf-env .no{background:#fdecea;color:#d63638;border:1px solid #f5c6cb}
+                .temf-env .temf-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:8px 0}
+                .temf-env .temf-kv{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 10px;border:1px solid #e7ebf0;border-radius:8px;background:#fff}
+                .temf-env .temf-kv span:first-child{color:#3b4351}
+                .temf-env .temf-badge{display:inline-block;min-width:18px;text-align:center;padding:2px 8px;border-radius:999px;font-size:12px}
+                .temf-env .ok{background:#edf7f0;color:#246b45;border:1px solid #d6eadc}
+                .temf-env .no{background:#fff2f0;color:#b5473c;border:1px solid #f3d2cd}
                 .temf-env .muted{color:#666;font-size:12px}
+                @media (max-width: 900px){.temf-env .temf-row{grid-template-columns:1fr}}
             </style>';
             $badge = function($b){ return $b ? '<span class="temf-badge ok">OK</span>' : '<span class="temf-badge no">NO</span>'; };
             echo '<div class="temf-row">';
@@ -74,53 +75,7 @@ class ConfigForm
             echo '<div class="temf-kv"><span>memory_limit</span><span class="temf-badge ok" style="background:#eef6ff;color:#0b62bd;border:1px solid #d6e9ff">' . htmlspecialchars($memoryLimit) . '</span></div>';
             echo '</div>';
 
-            // 关键函数自检
-            $checks = [
-                'JSON 函数' => [
-                    'json_encode' => function_exists('json_encode'),
-                    'json_decode' => function_exists('json_decode'),
-                ],
-                '哈希/编码' => [
-                    'hash_hmac' => function_exists('hash_hmac'),
-                    'base64_encode' => function_exists('base64_encode'),
-                ],
-                'XML 解析' => [
-                    'simplexml_load_string' => function_exists('simplexml_load_string'),
-                ],
-                '文件/流' => [
-                    'file_get_contents' => function_exists('file_get_contents'),
-                    'fopen' => function_exists('fopen'),
-                ],
-                'GD 图片' => [
-                    'imagecreatefromjpeg' => function_exists('imagecreatefromjpeg'),
-                    'imagecreatefrompng' => function_exists('imagecreatefrompng'),
-                    'imagecreatefromgif' => function_exists('imagecreatefromgif'),
-                    'imagecreatefromwebp' => function_exists('imagecreatefromwebp'),
-                    'imagejpeg' => function_exists('imagejpeg'),
-                    'imagepng' => function_exists('imagepng'),
-                    'imagegif' => function_exists('imagegif'),
-                    'imagewebp' => function_exists('imagewebp'),
-                ],
-                'cURL（兰空图床）' => [
-                    'curl_init' => function_exists('curl_init'),
-                    'curl_setopt' => function_exists('curl_setopt'),
-                    'CURLFile 类' => class_exists('CURLFile'),
-                ],
-            ];
-
-            echo '<div style="margin-top:6px" class="temf-row">';
-            foreach ($checks as $group => $items) {
-                echo '<div class="temf-kv" style="flex-direction:column;align-items:flex-start">';
-                echo '<strong style="font-size:12px;color:#333;margin-bottom:4px">' . htmlspecialchars($group) . '</strong>';
-                echo '<div class="temf-funcs" style="display:flex;flex-wrap:wrap;gap:6px">';
-                foreach ($items as $name => $pass) {
-                    echo '<span class="temf-badge ' . ($pass ? 'ok' : 'no') . '" title="' . htmlspecialchars($name) . '">' . htmlspecialchars($name) . '</span>';
-                }
-                echo '</div>';
-                echo '</div>';
-            }
-            echo '</div>';
-            echo '<p class="description" style="margin:6px 0 0;">建议：upload_max_filesize/post_max_size ≥ 20M，memory_limit ≥ 256M；弱机可依赖1080px上限与内存防护稳定运行。</p>';
+            echo '<p class="description" style="margin:6px 0 0;">建议：上传限制不低于 20M，内存限制不低于 256M。</p>';
             echo '</div>';
             echo '</details>';
             echo '</div>';
@@ -146,27 +101,28 @@ class ConfigForm
                 'local' => _t('本地'), 
                 'cos' => _t('腾讯COS'), 
                 'oss' => _t('阿里云OSS'), 
+                'bitiful' => _t('缤纷云存储'),
                 'upyun' => _t('又拍云'),
                 'lsky' => _t('兰空图床'),
-                'multi' => _t('我全都要')
+            'multi' => _t('我全都要')
             ],
             'local',
             _t('存储方式'),
-            _t('选择图片来源：<br>• <strong>单一模式</strong>：本地上传目录、腾讯COS、阿里云OSS、又拍云 或兰空图床<br>• <strong>我全都要</strong>：同时启用所有已配置的存储方式，可在素材库中动态切换<br><span style="color:#0073aa;font-size:12px;">提示：切换存储方式时，其他模式的配置会自动保留，不会丢失嘟</span>')
+            _t('单一模式使用一个存储；“我全都要”会同时启用已配置的存储，并在素材库中切换。')
         );
         $form->addInput($storage);
     }
     
     private static function addCosConfig(\Typecho\Widget\Helper\Form $form)
     {
-        echo '<p class="description temf-cos-desc" style="margin:8px 0;">' . _t('选择 "存储方式：腾讯COS" 后，填写以下 COS 配置') . '</p>';
+        echo '<p class="description temf-cos-desc" style="margin:8px 0;">' . _t('填写腾讯云 COS 配置。') . '</p>';
         
         $cosBucket = new \Typecho\Widget\Helper\Form\Element\Text(
             'cosBucket', 
             null, 
             '', 
-            _t('Bucket（存储桶名称）'), 
-            _t('格式：senmu-bucket-1250000000')
+            _t('存储桶名称（Bucket）'), 
+            _t('输入 COS 存储桶名称，例如 example-1250000000。')
         );
         $cosBucket->setAttribute('class', 'temf-cos-field');
         $form->addInput($cosBucket);
@@ -175,8 +131,8 @@ class ConfigForm
             'cosRegion', 
             null, 
             'ap-beijing', 
-            _t('Region（地域）'), 
-            _t('如 ap-beijing, ap-shanghai')
+            _t('所属地域（Region）'), 
+            _t('输入存储桶所属地域，例如 ap-beijing。')
         );
         $cosRegion->setAttribute('class', 'temf-cos-field');
         $form->addInput($cosRegion);
@@ -185,8 +141,8 @@ class ConfigForm
             'cosSecretId', 
             null, 
             '', 
-            _t('SecretId（访问密钥Id）'), 
-            _t('腾讯云访问密钥 SecretId')
+            _t('访问密钥 ID（SecretId）'), 
+            _t('输入腾讯云访问密钥 ID。')
         );
         $cosSecretId->setAttribute('class', 'temf-cos-field');
         $form->addInput($cosSecretId);
@@ -195,8 +151,8 @@ class ConfigForm
             'cosSecretKey', 
             null, 
             '', 
-            _t('SecretKey（访问密钥）'), 
-            _t('腾讯云访问密钥 SecretKey')
+            _t('访问密钥（SecretKey）'), 
+            _t('输入腾讯云访问密钥。')
         );
         $cosSecretKey->setAttribute('class', 'temf-cos-field');
         $form->addInput($cosSecretKey);
@@ -205,8 +161,8 @@ class ConfigForm
             'cosPrefix', 
             null, 
             '', 
-            _t('Prefix（路径前缀）'), 
-            _t('拼接到 COS 域名后，如留空则为根目录')
+            _t('路径前缀（Prefix）'), 
+            _t('留空为根目录；直接填写如 uploads 或 uploads/2026，不需要以 / 开头或结尾。')
         );
         $cosPrefix->setAttribute('class', 'temf-cos-field');
         $form->addInput($cosPrefix);
@@ -224,14 +180,14 @@ class ConfigForm
     
     private static function addOssConfig(\Typecho\Widget\Helper\Form $form)
     {
-        echo '<p class="description temf-oss-desc" style="margin:8px 0;">' . _t('选择 "存储方式：阿里云OSS" 后，填写以下 OSS 配置') . '</p>';
+        echo '<p class="description temf-oss-desc" style="margin:8px 0;">' . _t('填写阿里云 OSS 配置。') . '</p>';
         
         $ossBucket = new \Typecho\Widget\Helper\Form\Element\Text(
             'ossBucket', 
             null, 
             '', 
-            _t('Bucket（存储桶名称）'), 
-            _t('OSS 存储桶名称')
+            _t('存储桶名称（Bucket）'), 
+            _t('输入 OSS 存储桶名称。')
         );
         $ossBucket->setAttribute('class', 'temf-oss-field');
         $form->addInput($ossBucket);
@@ -240,8 +196,8 @@ class ConfigForm
             'ossEndpoint', 
             null, 
             '', 
-            _t('Endpoint（服务地址）'), 
-            _t('例如: https://oss-cn-beijing.aliyuncs.com')
+            _t('服务地址（Endpoint）'), 
+            _t('输入 OSS 服务地址，例如 https://oss-cn-beijing.aliyuncs.com。')
         );
         $ossEndpoint->setAttribute('class', 'temf-oss-field');
         $form->addInput($ossEndpoint);
@@ -250,8 +206,8 @@ class ConfigForm
             'ossAccessKeyId', 
             null, 
             '', 
-            _t('AccessKeyId（访问密钥Id）'), 
-            _t('阿里云访问密钥 AccessKeyId')
+            _t('访问密钥 ID（AccessKeyId）'), 
+            _t('输入阿里云访问密钥 ID。')
         );
         $ossAccessKeyId->setAttribute('class', 'temf-oss-field');
         $form->addInput($ossAccessKeyId);
@@ -260,8 +216,8 @@ class ConfigForm
             'ossAccessKeySecret', 
             null, 
             '', 
-            _t('AccessKeySecret（访问密钥）'), 
-            _t('阿里云访问密钥 AccessKeySecret')
+            _t('访问密钥（AccessKeySecret）'), 
+            _t('输入阿里云访问密钥。')
         );
         $ossAccessKeySecret->setAttribute('class', 'temf-oss-field');
         $form->addInput($ossAccessKeySecret);
@@ -270,8 +226,8 @@ class ConfigForm
             'ossPrefix', 
             null, 
             '', 
-            _t('Prefix（路径前缀）'), 
-            _t('拼接到自定义域名或 Endpoint/Bucket 后')
+            _t('路径前缀（Prefix）'), 
+            _t('留空为根目录；直接填写如 uploads 或 uploads/2026，不需要以 / 开头或结尾。')
         );
         $ossPrefix->setAttribute('class', 'temf-oss-field');
         $form->addInput($ossPrefix);
@@ -286,6 +242,83 @@ class ConfigForm
         $ossDomain->setAttribute('class', 'temf-oss-field');
         $form->addInput($ossDomain);
     }
+
+    private static function addBitifulConfig(\Typecho\Widget\Helper\Form $form)
+    {
+        $testBitifulUrl = \Widget\Security::alloc()->getIndex('/action/temf-test-bitiful');
+        echo '<p class="description temf-bitiful-desc" style="margin:8px 0;" data-test-bitiful-url="' . htmlspecialchars($testBitifulUrl) . '">' . _t('填写缤纷云 S4 配置。') . '</p>';
+
+        $bitifulBucket = new \Typecho\Widget\Helper\Form\Element\Text(
+            'bitifulBucket',
+            null,
+            '',
+            _t('存储桶名称（Bucket）'),
+            _t('输入缤纷云存储桶名称。')
+        );
+        $bitifulBucket->setAttribute('class', 'temf-bitiful-field');
+        $form->addInput($bitifulBucket);
+
+        $bitifulRegion = new \Typecho\Widget\Helper\Form\Element\Text(
+            'bitifulRegion',
+            null,
+            'cn-east-1',
+            _t('所属地域（Region）'),
+            _t('输入缤纷云地域，默认 cn-east-1。')
+        );
+        $bitifulRegion->setAttribute('class', 'temf-bitiful-field');
+        $form->addInput($bitifulRegion);
+
+        $bitifulEndpoint = new \Typecho\Widget\Helper\Form\Element\Text(
+            'bitifulEndpoint',
+            null,
+            'https://s3.bitiful.net',
+            _t('服务地址（Endpoint）'),
+            _t('输入缤纷云服务地址，默认 https://s3.bitiful.net。')
+        );
+        $bitifulEndpoint->setAttribute('class', 'temf-bitiful-field');
+        $form->addInput($bitifulEndpoint);
+
+        $bitifulAccessKey = new \Typecho\Widget\Helper\Form\Element\Text(
+            'bitifulAccessKey',
+            null,
+            '',
+            _t('访问密钥 ID（AccessKey）'),
+            _t('输入缤纷云 AccessKey。')
+        );
+        $bitifulAccessKey->setAttribute('class', 'temf-bitiful-field');
+        $form->addInput($bitifulAccessKey);
+
+        $bitifulSecretKey = new \Typecho\Widget\Helper\Form\Element\Text(
+            'bitifulSecretKey',
+            null,
+            '',
+            _t('访问密钥（SecretKey）'),
+            _t('输入缤纷云 SecretKey。<button type="button" id="test-bitiful-connection" class="btn btn-xs">测试连接</button>')
+        );
+        $bitifulSecretKey->setAttribute('class', 'temf-bitiful-field');
+        $bitifulSecretKey->input->setAttribute('type', 'password');
+        $form->addInput($bitifulSecretKey);
+
+        $bitifulPrefix = new \Typecho\Widget\Helper\Form\Element\Text(
+            'bitifulPrefix',
+            null,
+            '',
+            _t('路径前缀（Prefix）'),
+            _t('留空为根目录；直接填写如 uploads 或 uploads/2026，不需要以 / 开头或结尾。')
+        );
+        $bitifulPrefix->setAttribute('class', 'temf-bitiful-field');
+        $form->addInput($bitifulPrefix);
+
+        $bitifulDomain = new \Typecho\Widget\Helper\Form\Element\Text(
+            'bitifulDomain',
+            null,
+            '',
+            _t('Domain（自定义域名，可选）'),
+            _t('例如: https://cdn.example.com，不带最后的斜杠')
+        );
+        $bitifulDomain->setAttribute('class', 'temf-bitiful-field');
+        $form->addInput($bitifulDomain);
+    }
     
     private static function addUpyunConfig(\Typecho\Widget\Helper\Form $form)
     {
@@ -293,10 +326,7 @@ class ConfigForm
         $testUpyunUrl = \Widget\Security::alloc()->getIndex('/action/temf-test-upyun');
         
         echo '<div class="temf-upyun-desc" style="margin:8px 0; padding:10px; background:#f8f8f8; " data-test-upyun-url="' . htmlspecialchars($testUpyunUrl) . '">';
-        echo '<p style="margin:0 0 5px;">1. 登录 <a href="https://console.upyun.com" target="_blank">又拍云控制台</a></p>';
-        echo '<p style="margin:0 0 5px;">2. 创建云存储服务（选择"网页图片"）</p>';
-        echo '<p style="margin:0 0 5px;">3. 在"操作员授权"中创建操作员并授权</p>';
-        echo '<p style="margin:0;"><strong>注意：</strong>域名必须配置并已绑定加速域名</p>';
+        echo '<p style="margin:0;">填写又拍云的服务名称、操作员账号、操作员密码和加速域名，保存前可先测试连接。</p>';
         echo '</div>';
         
         $upyunBucket = new \Typecho\Widget\Helper\Form\Element\Text(
@@ -304,7 +334,7 @@ class ConfigForm
             null,
             '',
             _t('服务名称'),
-            _t('又拍云存储服务名称（即Bucket名称）')
+            _t('输入又拍云服务名称，也就是 Bucket 名称。')
         );
         $upyunBucket->setAttribute('class', 'temf-upyun-field');
         $form->addInput($upyunBucket);
@@ -314,7 +344,7 @@ class ConfigForm
             null,
             '',
             _t('操作员账号'),
-            _t('授权的操作员账号名')
+            _t('输入已授权到该服务的操作员账号。')
         );
         $upyunOperator->setAttribute('class', 'temf-upyun-field');
         $form->addInput($upyunOperator);
@@ -324,7 +354,7 @@ class ConfigForm
             null,
             '',
             _t('操作员密码'),
-            _t('操作员的密码（明文保存，请注意安全），<button type="button" id="test-upyun-connection" class="btn btn-xs">测试连接</button>')
+            _t('输入操作员密码。<button type="button" id="test-upyun-connection" class="btn btn-xs">测试连接</button>')
         );
         $upyunPassword->setAttribute('class', 'temf-upyun-field');
         $upyunPassword->input->setAttribute('type', 'password');
@@ -335,7 +365,7 @@ class ConfigForm
             null,
             '',
             _t('加速域名'),
-            _t('又拍云绑定的加速域名，例如: https://cdn.example.com （不带最后的斜杠）')
+            _t('输入已绑定的加速域名，例如 https://cdn.example.com，不带最后的斜杠。')
         );
         $upyunDomain->setAttribute('class', 'temf-upyun-field');
         $form->addInput($upyunDomain);
@@ -344,11 +374,7 @@ class ConfigForm
     private static function addLskyConfig(\Typecho\Widget\Helper\Form $form)
     {
         echo '<div class="temf-lsky-desc" style="margin:8px 0; padding:10px; background:#f8f8f8; ">';
-        echo '<p style="margin:0 0 5px;">1. 登录您的兰空图床后台</p>';
-        echo '<p style="margin:0 0 5px;">2. 在"用户中心" → "令牌管理"中创建新的API Token</p>';
-        echo '<p style="margin:0 0 5px;">3. 复制生成的Token并填入下方配置</p>';
-        echo '<p style="margin:0;"><strong>注意：</strong>Token格式通常为长字符串，如：1|aaa111aaa111...</p>';
-        echo '<p style="margin:5px 0 0; color:#d63638;"><strong>重要：</strong>相册ID如果不存在会导致获取图片失败，建议留空</p>';
+        echo '<p style="margin:0;">填写兰空图床地址和 API Token。相册 ID、存储策略 ID 可按需填写；不确定时留空即可。兰空图床不支持目录结构，因此“网络存储按年月上传”对它无效。</p>';
         echo '</div>';
         
         $lskyUrl = new \Typecho\Widget\Helper\Form\Element\Text(
@@ -356,7 +382,7 @@ class ConfigForm
             null, 
             '', 
             _t('兰空图床地址'), 
-            _t('兰空图床的完整地址，例如: https://oxxx.cn,不带"/"')
+            _t('输入兰空图床完整地址，例如 https://img.example.com，不带最后的斜杠。')
         );
         $lskyUrl->setAttribute('class', 'temf-lsky-field');
         $form->addInput($lskyUrl);
@@ -366,7 +392,7 @@ class ConfigForm
             null, 
             '', 
             _t('API Token'), 
-            _t('在兰空图床后台生成的API Token，<button type="button" id="test-lsky-token" class="btn btn-xs">测试连接</button>')
+            _t('输入在兰空图床后台生成的 API Token。<button type="button" id="test-lsky-token" class="btn btn-xs">测试连接</button>')
         );
         $lskyToken->setAttribute('class', 'temf-lsky-field');
         $form->addInput($lskyToken);
@@ -376,7 +402,7 @@ class ConfigForm
             null, 
             '', 
             _t('相册ID（可选）'), 
-            _t('指定上传到特定相册，留空则显示所有图片。<strong>注意：</strong>如果相册不存在会导致获取图片失败')
+            _t('可选；留空时显示全部图片。')
         );
         $lskyAlbumId->setAttribute('class', 'temf-lsky-field');
         $form->addInput($lskyAlbumId);
@@ -386,7 +412,7 @@ class ConfigForm
             null, 
             '', 
             _t('存储策略ID（可选）'), 
-            _t('指定使用的存储策略，留空则使用默认策略')
+            _t('可选；指定上传使用的存储策略，留空则使用默认策略。')
         );
         $lskyStrategyId->setAttribute('class', 'temf-lsky-field');
         $form->addInput($lskyStrategyId);
@@ -399,20 +425,20 @@ class ConfigForm
             null,
             '4',
             _t('每页显示行数'),
-            _t('设置每页显示的图片行数（默认4行）。实际显示数量 = 行数 × 每行图片数（自适应屏幕宽度）。<br><span style="color:#0073aa;">提示：行数越多，初始加载时间越长，建议3-6行</span>')
+            _t('默认 4。建议设置为 3-6。')
         );
         $paginationRows->setAttribute('class', 'temf-advanced-field');
         $form->addInput($paginationRows);
-        
-        $thumb = new \Typecho\Widget\Helper\Form\Element\Text(
-            'thumb',
-            null,
-            '120',
-            _t('缩略图边长(px)'),
-            _t('默认 120')
+
+        $networkYearMonthFolders = new \Typecho\Widget\Helper\Form\Element\Radio(
+            'networkYearMonthFolders',
+            ['1' => _t('启用'), '0' => _t('禁用')],
+            '0',
+            _t('网络存储按年月上传'),
+            _t('启用后，目录型网络存储上传会按当前年月自动写入，如 /2026/03。兰空图床不支持目录结构，此选项对兰空图床无效。')
         );
-        $thumb->setAttribute('class', 'temf-advanced-field');
-        $form->addInput($thumb);
+        $networkYearMonthFolders->setAttribute('class', 'temf-advanced-field');
+        $form->addInput($networkYearMonthFolders);
         
         $extensions = new \Typecho\Widget\Helper\Form\Element\Text(
             'extensions',
@@ -429,7 +455,7 @@ class ConfigForm
             ['1' => _t('启用'), '0' => _t('禁用')],
             '1',
             _t('WebP图片压缩(强烈建议打开）'),
-            _t('上传图片时自动转换为WebP格式以减小文件大小<br><span style="color:#0073aa;">兰空图床可能不支持WEBP会自动转换为JPG格式</span><br><span style="color:#666;">需要服务器支持GD扩展的WebP功能</span>')
+            _t('上传时自动转换为 WebP 以减小体积。需要服务器支持 GD 的 WebP 功能。')
         );
         $enableWebpCompression->setAttribute('class', 'temf-advanced-field');
         $form->addInput($enableWebpCompression);
@@ -444,83 +470,228 @@ class ConfigForm
         $webpQuality->setAttribute('class', 'temf-advanced-field');
         $form->addInput($webpQuality);
 
-        echo '<div class="temf-card" id="temf-telemetry-group">';
-        echo '<h4>' . _t('匿名使用数据（说明）') . '</h4>';
-        echo '<p class="description" style="margin:6px 0">' .
-             _t('本插件在“激活”时会向开发者服务器一次性上报匿名环境信息，用于改进产品体验：') . '</p>';
-        echo '</ul>';
-        echo '</div>';
+        
     }
     
     private static function addAssets()
     {
         echo <<<HTML
 <style>
+.temf-card {
+    margin: 16px 0;
+    padding: 12px 14px;
+    border: 1px dashed #d7ddd6;
+    border-radius: 12px;
+    background: #f7f8f5;
+}
+.temf-card h4 {
+    margin: 0 0 10px;
+    font-size: 14px;
+    color: #2f3a34;
+}
+.temf-env-wrap,
+#temf-advanced-group {
+    margin-top: 18px;
+    padding: 12px 14px 0;
+    border: 1px dashed #d7ddd6;
+    border-radius: 12px;
+    background: #f7f8f5;
+    box-shadow: none;
+}
+.temf-env-wrap {
+    border-color: #d3ddd8;
+    background: #f6faf7;
+}
 .temf-config-nav {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin: 10px 0 14px;
+    margin: 8px 0 14px;
 }
 .temf-config-tab {
-    border: 1px solid #d0d7de;
+    border: 1px dashed #cfd7cf;
+    border-radius: 10px;
     background: #fff;
-    color: #24292f;
-    border-radius: 999px;
-    padding: 4px 12px;
+    color: #4d5952;
+    padding: 6px 12px;
     font-size: 12px;
+    line-height: 1;
     cursor: pointer;
+    position: relative;
+    padding-right: 20px;
 }
 .temf-config-tab.active {
-    background: #24292f;
-    color: #fff;
-    border-color: #24292f;
+    border-style: solid;
+    border-color: #4f7f73;
+    background: #edf4f1;
+    color: #2f3a34;
+    box-shadow: inset 0 0 0 1px rgba(79, 127, 115, 0.14);
 }
-.temf-card {
-    border: 1px solid #d8dee4;
-    border-radius: 6px;
-    padding: 10px 14px;
-    margin: 12px 0;
-    background: #fff;
+.temf-config-tab::after {
+    content: '';
+    position: absolute;
+    top: 7px;
+    right: 8px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #c2c8c2;
 }
-.temf-card h4 {
-    margin: 0 0 8px;
-    font-size: 14px;
-    color: #1f2328;
+.temf-config-tab.temf-config-tab-ready::after {
+    background: #4f8a63;
+    box-shadow: 0 0 0 2px #eef5f0;
 }
-.temf-oss-field, 
-.temf-cos-field,
-.temf-upyun-field,
-.temf-lsky-field {
-    list-style-type: none;
-    padding: 4px 0;
+.temf-config-tab.temf-config-tab-empty {
+    color: #8a7563;
+    border-color: #dccfbe;
+    background: #fdfaf6;
+    position: relative;
 }
-.temf-card .description,
-.temf-env-wrap .description {
-    padding: 0;
-    margin: .1em;
+.temf-config-tab.temf-config-tab-empty::after {
+    background: #d14343;
+    box-shadow: 0 0 0 2px #fdfaf6;
+}
+.temf-config-tab.active.temf-config-tab-ready::after {
+    background: #3f7a56;
+    box-shadow: 0 0 0 2px #edf4f1;
+}
+.temf-config-tab.active.temf-config-tab-empty::after {
+    box-shadow: 0 0 0 2px #edf4f1;
+}
+.temf-config-hint {
+    margin: 8px 0 0;
+    color: #64716a;
     font-size: 12px;
-    color: #929292;
+    line-height: 1.6;
+}
+.temf-config-hint strong {
+    color: #2f3a34;
+}
+.typecho-option {
+    margin: 0 0 14px;
+    list-style: none !important;
+    padding-left: 0 !important;
+}
+.typecho-option li {
+    padding: 12px 0;
+    border-bottom: 1px solid #eef1ee;
+    list-style: none !important;
+    padding-left: 0 !important;
+}
+.typecho-option li::marker {
+    content: none !important;
+    font-size: 0 !important;
+}
+.typecho-option > li:last-child {
+    border-bottom: none;
+}
+.typecho-label {
+    display: inline-block;
+    margin-bottom: 8px;
+    color: #2f3a34;
+    font-weight: 600;
+}
+.typecho-option > li > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 18px 8px 0;
+}
+.typecho-option input[type="text"],
+.typecho-option input[type="password"],
+.typecho-option textarea,
+.typecho-option select {
+    margin-top: 6px;
+}
+.typecho-option .description {
+    margin-top: 8px;
+    color: #6b7280;
+    line-height: 1.7;
+}
+#test-upyun-connection,
+#test-lsky-token,
+#test-bitiful-connection {
+    margin-left: 6px;
+    padding: 2px 8px;
+    border: 1px solid #d5ddd6;
+    border-radius: 999px;
+    background: #fff;
+    color: #4d5952;
+    font-size: 12px;
+    line-height: 1.4;
+    cursor: pointer;
+}
+#test-upyun-connection:hover,
+#test-lsky-token:hover,
+#test-bitiful-connection:hover {
+    border-color: #bfcac2;
+    background: #f7faf8;
+}
+#test-upyun-connection:disabled,
+#test-lsky-token:disabled,
+#test-bitiful-connection:disabled {
+    opacity: .65;
+    cursor: not-allowed;
+}
+.temf-env-wrap .temf-collapse > summary,
+#temf-advanced-group .temf-collapse > summary {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 0 12px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #2f3a34;
+}
+.temf-env-wrap .temf-collapse > summary::before,
+#temf-advanced-group .temf-collapse > summary::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 5px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #8aa6c1;
+}
+#temf-advanced-group .temf-collapse > summary::before {
+    background: #9a8b73;
+}
+.temf-env-wrap .temf-collapse-body,
+#temf-advanced-group .temf-collapse-body {
+    padding: 6px 0 12px;
+}
+.temf-env-wrap .description,
+#temf-advanced-group .description {
+    color: #666;
+}
+.temf-env-wrap .temf-collapse[open] > summary,
+#temf-advanced-group .temf-collapse[open] > summary {
+    border-bottom: 1px solid #edf0f3;
+    margin-bottom: 10px;
 }
 .temf-config-status {
-    margin: 6px 0;
-    padding: 6px 8px;
+    margin: 6px 0 10px;
+    padding: 7px 9px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 11px;
+    line-height: 1.7;
 }
 .temf-test-result {
     margin-top: 8px;
     padding: 8px 10px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1.5;
-    border: 1px solid #d0d7de;
-    background: #f6f8fa;
-    color: #24292f;
+    border: 1px solid rgba(72, 69, 61, 0.06);
+    background: #faf8f5;
+    color: var(--temf-ink);
     white-space: pre-line;
 }
 .temf-test-result.ok {
-    border-color: #b7dfc8;
+    border-color: #cfe7d6;
     background: #edf9f1;
     color: #1f6f43;
 }
@@ -530,7 +701,7 @@ class ConfigForm
     color: #b42318;
 }
 .temf-collapse-card {
-    padding: 0;
+    padding: 12px 14px 0;
 }
 .temf-collapse {
     border: none;
@@ -538,19 +709,23 @@ class ConfigForm
 .temf-collapse > summary {
     list-style: none;
     cursor: pointer;
-    padding: 10px 14px;
-    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    font-size: 13px;
     font-weight: 600;
-    color: #1f2328;
+    color: #2f3a34;
     user-select: none;
-    border-bottom: 1px solid #e5e9ef;
+    border-bottom: 0;
 }
 .temf-collapse > summary::-webkit-details-marker {
     display: none;
 }
 .temf-collapse > summary::after {
     content: '展开';
-    float: right;
+    flex: 0 0 auto;
     font-size: 12px;
     font-weight: 400;
     color: #667085;
@@ -559,7 +734,137 @@ class ConfigForm
     content: '收起';
 }
 .temf-collapse-body {
-    padding: 10px 14px;
+    padding: 8px 12px 12px;
+}
+.temf-upyun-desc,
+.temf-lsky-desc,
+.temf-bitiful-desc,
+.temf-oss-desc,
+.temf-cos-desc {
+    padding: 8px 10px;
+    border-radius: 4px;
+    background: #fff;
+    border: 1px dashed #dde3dc;
+}
+.temf-storage-layout {
+    margin: 8px 0 0;
+}
+.temf-storage-section-title {
+    margin: 10px 0 6px;
+    color: #64716a;
+    font-size: 12px;
+    font-weight: 600;
+}
+.temf-storage-section-title:first-child {
+    margin-top: 0;
+}
+.temf-storage-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px 12px;
+    margin-bottom: 8px;
+}
+.temf-storage-choice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px dashed #d9dfd8;
+    border-radius: 10px;
+    background: #fff;
+    box-sizing: border-box;
+    cursor: pointer;
+}
+.temf-storage-choice input {
+    margin: 0;
+}
+.temf-storage-choice label {
+    margin: 0;
+    flex: 1 1 auto;
+    cursor: pointer;
+}
+.temf-storage-choice.temf-storage-choice-active {
+    border-style: solid;
+    border-color: #4f7f73;
+    background: #edf4f1;
+}
+.temf-storage-multi {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 10px 12px;
+    border: 1px dashed #d7ddd6;
+    border-radius: 10px;
+    background: #fff;
+    margin-bottom: 8px;
+}
+.temf-storage-multi label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-weight: 600;
+    cursor: pointer;
+}
+.temf-storage-multi-note {
+    color: #64716a;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.temf-storage-multi-note strong {
+    color: #2f3a34;
+}
+.temf-storage-hidden {
+    display: none !important;
+}
+#temf-advanced-group ul {
+    margin-bottom: 10px;
+}
+.temf-advanced-field + .description {
+    color: #666;
+}
+@media (max-width: 900px) {
+    .temf-storage-row {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .temf-storage-multi {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+@media (max-width: 640px) {
+    .temf-storage-row {
+        grid-template-columns: 1fr;
+    }
+}
+.submit,
+p.submit,
+.typecho-option-submit {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 8px 0 0;
+    background: transparent;
+}
+.submit .btn,
+p.submit .btn,
+.typecho-option-submit .btn,
+.submit button,
+p.submit button,
+.typecho-option-submit button,
+.submit input[type="submit"],
+p.submit input[type="submit"],
+.typecho-option-submit input[type="submit"] {
+    min-width: 112px;
+}
+.temf-upyun-desc p,
+.temf-lsky-desc p {
+    color: #666;
 }
 </style>
 <script>
@@ -569,6 +874,164 @@ class ConfigForm
     function ready() {
         radios = document.querySelectorAll('input[name="storage"]');
         var groupMap = {};
+        var activeConfigTab = 'cos';
+
+        function enhancePageFrame() {
+            return;
+        }
+
+        function enhanceStorageLayout() {
+            var storageInput = document.querySelector('input[name="storage"]');
+            var multiRadio = document.querySelector('input[name="storage"][value="multi"]');
+            if (!storageInput || !multiRadio) return;
+            var storageWrap = storageInput.closest ? storageInput.closest('li, .typecho-option, tr') : null;
+            if (!storageWrap || storageWrap.getAttribute('data-temf-storage-ready') === '1') return;
+
+            var optionMap = {};
+            Array.prototype.forEach.call(document.querySelectorAll('input[name="storage"]'), function (radio) {
+                if (!radio || !radio.value) return;
+                var container = radio.parentNode;
+                if (!container) return;
+                optionMap[radio.value] = { container: container };
+            });
+
+            var row1Values = ['local', 'cos', 'oss'];
+            var row2Values = ['bitiful', 'upyun', 'lsky'];
+            var layout = document.createElement('div');
+            layout.className = 'temf-storage-layout';
+
+            function addSectionTitle(text) {
+                var title = document.createElement('div');
+                title.className = 'temf-storage-section-title';
+                title.textContent = text;
+                layout.appendChild(title);
+            }
+
+            function buildRow(values) {
+                var row = document.createElement('div');
+                row.className = 'temf-storage-row';
+                values.forEach(function (value) {
+                    var option = optionMap[value];
+                    if (!option || !option.container) return;
+                    option.container.classList.add('temf-storage-choice');
+                    option.container.addEventListener('click', function (e) {
+                        if (e.target && e.target.tagName && e.target.tagName.toLowerCase() === 'input') {
+                            return;
+                        }
+                        var input = option.container.querySelector('input[type="radio"]');
+                        if (input && !input.checked) {
+                            input.checked = true;
+                            input.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    });
+                    row.appendChild(option.container);
+                });
+                return row;
+            }
+
+            addSectionTitle('单一存储');
+            layout.appendChild(buildRow(row1Values));
+            addSectionTitle('更多存储');
+            layout.appendChild(buildRow(row2Values));
+
+            var multiWrap = document.createElement('div');
+            multiWrap.className = 'temf-storage-multi';
+            multiWrap.innerHTML = '' +
+                '<label for="temf-storage-multi-toggle"><input type="checkbox" id="temf-storage-multi-toggle"> <span>我全都要</span></label>' +
+                '<div class="temf-storage-multi-note">勾选后，将启用已配置的存储，并在素材库中切换。当前已生效 <strong id="temf-storage-active-count">0</strong> 项。</div>';
+            multiWrap.addEventListener('click', function (e) {
+                var labelEl = multiWrap.querySelector('label');
+                if (labelEl && labelEl.contains(e.target)) {
+                    return;
+                }
+                var input = document.getElementById('temf-storage-multi-toggle');
+                if (input) {
+                    input.checked = !input.checked;
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            });
+            layout.appendChild(multiWrap);
+
+            if (optionMap.multi && optionMap.multi.container) {
+                optionMap.multi.container.classList.add('temf-storage-hidden');
+            }
+            var description = storageWrap.querySelector('.description');
+            if (description) {
+                storageWrap.insertBefore(layout, description);
+            } else {
+                storageWrap.appendChild(layout);
+            }
+
+            var multiToggle = document.getElementById('temf-storage-multi-toggle');
+            var activeCount = document.getElementById('temf-storage-active-count');
+            var visibleRadios = [];
+            ['local', 'cos', 'oss', 'bitiful', 'upyun', 'lsky'].forEach(function (value) {
+                var input = document.querySelector('input[name="storage"][value="' + value + '"]');
+                if (input) visibleRadios.push(input);
+            });
+            var lastSingleValue = 'local';
+
+            function syncStorageChoiceState() {
+                Array.prototype.forEach.call(layout.querySelectorAll('.temf-storage-choice'), function (label) {
+                    var input = label.querySelector('input[type="radio"]');
+                    label.classList.toggle('temf-storage-choice-active', !!(input && input.checked && !multiToggle.checked));
+                });
+                if (activeCount) {
+                    var count = 0;
+                    ['cos', 'oss', 'bitiful', 'upyun', 'lsky'].forEach(function (type) {
+                        if (checkConfigExists(type)) count++;
+                    });
+                    if (checkConfigExists('local')) {
+                        count++;
+                    }
+                    activeCount.textContent = String(count);
+                }
+            }
+
+            Array.prototype.forEach.call(visibleRadios, function (radio) {
+                if (radio.checked) {
+                    lastSingleValue = radio.value;
+                }
+                radio.addEventListener('change', function () {
+                    lastSingleValue = radio.value;
+                    if (multiToggle.checked) {
+                        multiToggle.checked = false;
+                        multiRadio.checked = false;
+                    }
+                    syncStorageChoiceState();
+                    toggle();
+                });
+            });
+
+            multiToggle.checked = multiRadio.checked;
+            multiToggle.addEventListener('change', function () {
+                if (multiToggle.checked) {
+                    multiRadio.checked = true;
+                } else {
+                    multiRadio.checked = false;
+                    var target = document.querySelector('input[name="storage"][value="' + lastSingleValue + '"]') || visibleRadios[0];
+                    if (target) target.checked = true;
+                }
+                syncStorageChoiceState();
+                toggle();
+            });
+
+            var form = document.querySelector('form');
+            if (form) {
+                form.addEventListener('submit', function () {
+                    if (multiToggle.checked) {
+                        multiRadio.checked = true;
+                    } else {
+                        multiRadio.checked = false;
+                        var selected = document.querySelector('input[name="storage"][value="' + lastSingleValue + '"]') || visibleRadios[0];
+                        if (selected) selected.checked = true;
+                    }
+                });
+            }
+
+            storageWrap.setAttribute('data-temf-storage-ready', '1');
+            syncStorageChoiceState();
+        }
 
         function ensureTestResult(buttonEl) {
             if (!buttonEl || !buttonEl.parentNode) return null;
@@ -601,6 +1064,7 @@ class ConfigForm
             [
                 { key: 'cos', label: 'COS' },
                 { key: 'oss', label: 'OSS' },
+                { key: 'bitiful', label: '缤纷云' },
                 { key: 'upyun', label: '又拍云' },
                 { key: 'lsky', label: '兰空图床' }
             ].forEach(function(item) {
@@ -610,15 +1074,36 @@ class ConfigForm
                 btn.setAttribute('data-target', item.key);
                 btn.textContent = item.label;
                 btn.addEventListener('click', function() {
-                    var target = groupMap[item.key];
-                    if (target) {
-                        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    var multiToggle = document.getElementById('temf-storage-multi-toggle');
+                    if (multiToggle && !multiToggle.checked) {
+                        multiToggle.checked = true;
+                        if (multiRadio) {
+                            multiRadio.checked = true;
+                        }
                     }
+                    activeConfigTab = item.key;
+                    toggle();
                 });
                 nav.appendChild(btn);
             });
 
+            var hint = document.createElement('p');
+            hint.id = 'temf-config-hint';
+            hint.className = 'temf-config-hint';
+            hint.innerHTML = '多存储模式下，请通过这里切换并完成各存储配置。<strong>标记“未配置”的存储尚未生效。</strong>';
+
             storageWrap.parentNode.insertBefore(nav, storageWrap.nextSibling);
+            nav.parentNode.insertBefore(hint, nav.nextSibling);
+        }
+
+        function getFirstAvailableMultiTab() {
+            var candidates = ['cos', 'oss', 'bitiful', 'upyun', 'lsky'];
+            for (var i = 0; i < candidates.length; i++) {
+                if (checkConfigExists(candidates[i])) {
+                    return candidates[i];
+                }
+            }
+            return 'cos';
         }
         
         function ensureGroup(selector, groupId, title, descSelector) {
@@ -701,19 +1186,18 @@ class ConfigForm
             group.setAttribute('data-collapse-ready', '1');
         }
         
-        var cosGroup = ensureGroup('.temf-cos-field', 'temf-cos-group', 'COS 配置', '.temf-cos-desc');
-        var ossGroup = ensureGroup('.temf-oss-field', 'temf-oss-group', 'OSS 配置', '.temf-oss-desc');
-        var upyunGroup = ensureGroup('.temf-upyun-field', 'temf-upyun-group', '又拍云配置', '.temf-upyun-desc');
-        var lskyGroup = ensureGroup('.temf-lsky-field', 'temf-lsky-group', '兰空图床配置', '.temf-lsky-desc');
+        var cosGroup = ensureGroup('.temf-cos-field', 'temf-cos-group', '腾讯 COS', '.temf-cos-desc');
+        var ossGroup = ensureGroup('.temf-oss-field', 'temf-oss-group', '阿里云 OSS', '.temf-oss-desc');
+        var bitifulGroup = ensureGroup('.temf-bitiful-field', 'temf-bitiful-group', '缤纷云存储', '.temf-bitiful-desc');
+        var upyunGroup = ensureGroup('.temf-upyun-field', 'temf-upyun-group', '又拍云', '.temf-upyun-desc');
+        var lskyGroup = ensureGroup('.temf-lsky-field', 'temf-lsky-group', '兰空图床', '.temf-lsky-desc');
         var advancedGroup = ensureGroup('.temf-advanced-field', 'temf-advanced-group', '高级设置', null);
-        groupMap = { cos: cosGroup, oss: ossGroup, upyun: upyunGroup, lsky: lskyGroup };
+        groupMap = { cos: cosGroup, oss: ossGroup, bitiful: bitifulGroup, upyun: upyunGroup, lsky: lskyGroup };
+
+        enhanceStorageLayout();
         createConfigNav();
 
         if (advancedGroup) {
-            var telemetryCard = document.getElementById('temf-telemetry-group');
-            if (telemetryCard && telemetryCard.parentNode && telemetryCard.parentNode !== advancedGroup) {
-                advancedGroup.appendChild(telemetryCard);
-            }
             makeGroupCollapsible(advancedGroup, false);
         }
         
@@ -728,12 +1212,39 @@ class ConfigForm
             
             var cosInputs = document.querySelectorAll('.temf-cos-field');
             var ossInputs = document.querySelectorAll('.temf-oss-field');
+            var bitifulInputs = document.querySelectorAll('.temf-bitiful-field');
             var upyunInputs = document.querySelectorAll('.temf-upyun-field');
             var lskyInputs = document.querySelectorAll('.temf-lsky-field');
             var cosShow = (val === 'cos') || (val === 'multi');
             var ossShow = (val === 'oss') || (val === 'multi');
+            var bitifulShow = (val === 'bitiful') || (val === 'multi');
             var upyunShow = (val === 'upyun') || (val === 'multi');
             var lskyShow = (val === 'lsky') || (val === 'multi');
+            var nav = document.getElementById('temf-config-nav');
+
+            if (val === 'multi') {
+                if (['cos', 'oss', 'bitiful', 'upyun', 'lsky'].indexOf(activeConfigTab) === -1) {
+                    activeConfigTab = 'cos';
+                }
+            } else {
+                activeConfigTab = val;
+            }
+
+            if (nav) {
+                nav.style.display = val === 'multi' ? '' : 'none';
+            }
+            var hint = document.getElementById('temf-config-hint');
+            if (hint) {
+                hint.style.display = val === 'multi' ? '' : 'none';
+            }
+
+            if (val === 'multi') {
+                cosShow = activeConfigTab === 'cos';
+                ossShow = activeConfigTab === 'oss';
+                bitifulShow = activeConfigTab === 'bitiful';
+                upyunShow = activeConfigTab === 'upyun';
+                lskyShow = activeConfigTab === 'lsky';
+            }
             
             // 显示/隐藏配置组，但保持所有输入字段启用状态以确保数据提交
             for (var j = 0; j < cosInputs.length; j++) {
@@ -753,6 +1264,15 @@ class ConfigForm
                     ul2.style.display = ossShow ? '' : 'none';
                     // 确保隐藏的输入字段仍然可以提交
                     el2.disabled = false;
+                }
+            }
+
+            for (var kb = 0; kb < bitifulInputs.length; kb++) {
+                var elBitiful = bitifulInputs[kb];
+                var ulBitiful = elBitiful.closest ? elBitiful.closest('ul') : null;
+                if (ulBitiful) {
+                    ulBitiful.style.display = bitifulShow ? '' : 'none';
+                    elBitiful.disabled = false;
                 }
             }
             
@@ -789,6 +1309,12 @@ class ConfigForm
                 // 添加配置状态指示
                 updateConfigStatus(og, 'oss', ossShow);
             }
+
+            var bg = document.getElementById('temf-bitiful-group');
+            if (bg) {
+                bg.style.display = bitifulShow ? '' : 'none';
+                updateConfigStatus(bg, 'bitiful', bitifulShow);
+            }
             
             var ug = document.getElementById('temf-upyun-group');
             if (ug) {
@@ -807,8 +1333,11 @@ class ConfigForm
             var tabs = document.querySelectorAll('.temf-config-tab');
             for (var t = 0; t < tabs.length; t++) {
                 var key = tabs[t].getAttribute('data-target');
-                var active = (key === 'cos' && cosShow) || (key === 'oss' && ossShow) || (key === 'upyun' && upyunShow) || (key === 'lsky' && lskyShow);
-                tabs[t].classList.toggle('active', active);
+                var isConfigured = checkConfigExists(key);
+                tabs[t].style.display = val === 'multi' ? '' : 'none';
+                tabs[t].classList.toggle('temf-config-tab-ready', isConfigured);
+                tabs[t].classList.toggle('temf-config-tab-empty', !isConfigured);
+                tabs[t].classList.toggle('active', val === 'multi' ? key === activeConfigTab : ((key === 'cos' && cosShow) || (key === 'oss' && ossShow) || (key === 'bitiful' && bitifulShow) || (key === 'upyun' && upyunShow) || (key === 'lsky' && lskyShow)));
             }
         }
         
@@ -867,10 +1396,11 @@ class ConfigForm
 
         function getMissingFields(type) {
             var requiredMap = {
-                cos: [['cosBucket', 'Bucket'], ['cosSecretId', 'SecretId'], ['cosSecretKey', 'SecretKey']],
-                oss: [['ossBucket', 'Bucket'], ['ossAccessKeyId', 'AccessKeyId'], ['ossAccessKeySecret', 'AccessKeySecret']],
+                cos: [['cosBucket', '存储桶名称'], ['cosRegion', '所属地域'], ['cosSecretId', '访问密钥 ID'], ['cosSecretKey', '访问密钥']],
+                oss: [['ossBucket', '存储桶名称'], ['ossEndpoint', '服务地址'], ['ossAccessKeyId', '访问密钥 ID'], ['ossAccessKeySecret', '访问密钥']],
+                bitiful: [['bitifulBucket', '存储桶名称'], ['bitifulRegion', '所属地域'], ['bitifulEndpoint', '服务地址'], ['bitifulAccessKey', '访问密钥 ID'], ['bitifulSecretKey', '访问密钥']],
                 upyun: [['upyunBucket', '服务名称'], ['upyunOperator', '操作员账号'], ['upyunPassword', '操作员密码'], ['upyunDomain', '加速域名']],
-                lsky: [['lskyUrl', '图床地址'], ['lskyToken', 'API Token']]
+                lsky: [['lskyUrl', '图床地址'], ['lskyToken', '接口令牌']]
             };
 
             var required = requiredMap[type] || [];
@@ -887,17 +1417,21 @@ class ConfigForm
         // 检查指定类型的配置是否存在
         function checkConfigExists(type) {
             var fields = [];
-            if (type === 'cos') {
-                fields = ['cosBucket', 'cosSecretId', 'cosSecretKey'];
+            if (type === 'local') {
+                return true;
+            } else if (type === 'cos') {
+                fields = ['cosBucket', 'cosRegion', 'cosSecretId', 'cosSecretKey'];
             } else if (type === 'oss') {
-                fields = ['ossBucket', 'ossAccessKeyId', 'ossAccessKeySecret'];
+                fields = ['ossBucket', 'ossEndpoint', 'ossAccessKeyId', 'ossAccessKeySecret'];
+            } else if (type === 'bitiful') {
+                fields = ['bitifulBucket', 'bitifulRegion', 'bitifulEndpoint', 'bitifulAccessKey', 'bitifulSecretKey'];
             } else if (type === 'upyun') {
                 fields = ['upyunBucket', 'upyunOperator', 'upyunPassword', 'upyunDomain'];
             } else if (type === 'lsky') {
                 fields = ['lskyUrl', 'lskyToken'];
             }
             
-            return fields.some(function(fieldName) {
+            return fields.length > 0 && fields.every(function(fieldName) {
                 var input = document.querySelector('input[name="' + fieldName + '"]');
                 return input && input.value.trim() !== '';
             });
@@ -912,7 +1446,7 @@ class ConfigForm
         if (form) {
             form.addEventListener('submit', function() {
                 // 确保所有隐藏的配置字段都被启用，以便提交
-                var allConfigInputs = document.querySelectorAll('.temf-cos-field, .temf-oss-field, .temf-upyun-field, .temf-lsky-field');
+                var allConfigInputs = document.querySelectorAll('.temf-cos-field, .temf-oss-field, .temf-bitiful-field, .temf-upyun-field, .temf-lsky-field');
                 for (var i = 0; i < allConfigInputs.length; i++) {
                     allConfigInputs[i].disabled = false;
                 }
@@ -1058,6 +1592,78 @@ class ConfigForm
                           '请尝试：\\n' +
                           '• 禁用插件后重新启用\\n' +
                           '• 检查 Typecho 是否开启了伪静态', 'error');
+                });
+            });
+        }
+
+        var testBitifulBtn = document.getElementById('test-bitiful-connection');
+        if (testBitifulBtn) {
+            testBitifulBtn.addEventListener('click', function() {
+                var bucketField = document.querySelector('input[name="bitifulBucket"]');
+                var regionField = document.querySelector('input[name="bitifulRegion"]');
+                var endpointField = document.querySelector('input[name="bitifulEndpoint"]');
+                var accessKeyField = document.querySelector('input[name="bitifulAccessKey"]');
+                var secretKeyField = document.querySelector('input[name="bitifulSecretKey"]');
+
+                if (!bucketField || !regionField || !endpointField || !accessKeyField || !secretKeyField) return;
+
+                var bucket = bucketField.value.trim();
+                var region = regionField.value.trim();
+                var endpoint = endpointField.value.trim();
+                var accessKey = accessKeyField.value.trim();
+                var secretKey = secretKeyField.value.trim();
+
+                if (!bucket || !region || !endpoint || !accessKey || !secretKey) {
+                    showTestResult(testBitifulBtn, '请先填写完整的缤纷云配置信息', 'error');
+                    return;
+                }
+
+                var desc = document.querySelector('.temf-bitiful-desc');
+                var testUrl = desc ? desc.getAttribute('data-test-bitiful-url') : '';
+                if (!testUrl) {
+                    showTestResult(testBitifulBtn, '无法获取测试接口地址', 'error');
+                    return;
+                }
+
+                testBitifulBtn.disabled = true;
+                testBitifulBtn.textContent = '测试中...';
+
+                var formData = new FormData();
+                formData.append('bucket', bucket);
+                formData.append('region', region);
+                formData.append('endpoint', endpoint);
+                formData.append('accessKey', accessKey);
+                formData.append('secretKey', secretKey);
+                formData.append('provider', 'bitiful');
+
+                fetch(testUrl, {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin'
+                })
+                .then(function(response) {
+                    var contentType = response.headers.get('content-type') || '';
+                    if (contentType.indexOf('application/json') === -1) {
+                        return response.text().then(function(text) {
+                            throw new Error('服务器返回了非 JSON 响应，可能是路由未生效、权限不足或 PHP 报错。' + (text ? '\\n\\n' + text.substring(0, 200) : ''));
+                        });
+                    }
+                    return response.json();
+                })
+                .then(function(result) {
+                    testBitifulBtn.disabled = false;
+                    testBitifulBtn.textContent = '测试连接';
+
+                    if (result.success) {
+                        showTestResult(testBitifulBtn, '缤纷云连接成功\\n\\n' + result.message, 'ok');
+                    } else {
+                        showTestResult(testBitifulBtn, '缤纷云连接失败\\n\\n' + (result.message || '未知错误'), 'error');
+                    }
+                })
+                .catch(function(error) {
+                    testBitifulBtn.disabled = false;
+                    testBitifulBtn.textContent = '测试连接';
+                    showTestResult(testBitifulBtn, '测试失败\\n\\n' + error.message, 'error');
                 });
             });
         }

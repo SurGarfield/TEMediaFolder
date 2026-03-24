@@ -23,7 +23,7 @@ class CosService extends BaseService
             && !empty($this->cosConfig['secretKey']);
     }
 
-    public function getFileList($path = '')
+    public function getFileList($path = '', $options = [])
     {
         if (!$this->isConfigured()) {
             return ['folders' => [], 'files' => []];
@@ -33,12 +33,26 @@ class CosService extends BaseService
             $fullPrefix = $this->buildPrefix($path);
             $endpoint = $this->getEndpoint();
             $host = $this->getHost();
+            $pageSize = isset($options['page_size']) ? (int)$options['page_size'] : 0;
+            if ($pageSize <= 0) {
+                $pageSize = 60;
+            }
+            $pageSize = max(1, min($pageSize, 200));
+            $pageToken = isset($options['page_token']) ? trim((string)$options['page_token']) : '';
+            $foldersOnly = !empty($options['folders_only']);
+
+            if ($foldersOnly) {
+                return $this->getFolderListOnly($path);
+            }
             
             $query = [
                 'prefix' => $fullPrefix,
                 'delimiter' => '/',
-                'max-keys' => 1000
+                'max-keys' => $pageSize
             ];
+            if ($pageToken !== '') {
+                $query['marker'] = $pageToken;
+            }
 
             $authorization = $this->generateAuthorization('GET', '/', $query, $host);
             $url = $endpoint . '/?' . http_build_query($query);
@@ -49,7 +63,7 @@ class CosService extends BaseService
                 'User-Agent: TEMediaFolder/1.0'
             ]);
 
-            return $this->parseListResponse($response, $fullPrefix, $path);
+            return $this->parseListResponse($response, $fullPrefix, $path, $pageToken, $pageSize);
         } catch (\Exception $e) {
             return ['folders' => [], 'files' => []];
         }
@@ -196,6 +210,7 @@ class CosService extends BaseService
             
             // 使用压缩后的文件名（如 .webp）
             $safeFileName = $this->sanitizeFileName(basename($processedFilePath));
+            $targetPath = $this->resolveNetworkUploadPath($targetPath);
             $fullPrefix = $this->buildPrefix($targetPath);
             $objectKey = ltrim($fullPrefix . $safeFileName, '/');
             
@@ -226,14 +241,17 @@ class CosService extends BaseService
             $this->cleanupTempFile($processedFilePath);
             
             // 构建返回结果
-            $options = [];
-            if ($this->isImageFile($safeFileName)) {
-                $options['thumbnail'] = $this->getThumbnailUrl($publicUrl);
-            }
-            if ($isCompressed) {
-                $options['compressed'] = true;
-                $options['compression_info'] = $compressionResult;
-            }
+            $options = $this->buildImageUploadOptions(
+                $safeFileName,
+                $publicUrl,
+                $isCompressed,
+                $compressionResult,
+                [],
+                $this->isImageFile($safeFileName) ? $this->getThumbnailUrl($publicUrl) : null
+            );
+            $options['size'] = strlen($body);
+            $options['size_human'] = $this->formatFileSizeHuman($options['size']);
+            $options['directory'] = $this->extractDirectoryFromKey($objectKey);
             
             return $this->buildUploadResult(true, $publicUrl, $safeFileName, $options);
         } catch (\Exception $e) {
@@ -243,11 +261,7 @@ class CosService extends BaseService
 
     private function buildPrefix($path)
     {
-        $prefix = rtrim($this->cosConfig['prefix'], '/');
-        if (!empty($path)) {
-            $prefix = ($prefix === '' ? '' : $prefix . '/') . trim($path, '/');
-        }
-        return $prefix === '' ? '' : $prefix . '/';
+        return $this->buildPathPrefix($this->cosConfig['prefix'], $path);
     }
 
     private function getEndpoint()
@@ -276,8 +290,7 @@ class CosService extends BaseService
 
     private function getThumbnailUrl($originalUrl)
     {
-        // 获取配置的缩略图尺寸
-        $thumbSize = $this->config->get('thumbSize', 120);
+        $thumbSize = $this->getDefaultThumbSize();
  
         return $originalUrl . '?imageMogr2/crop/' . $thumbSize . 'x' . $thumbSize 
             . '/gravity/center'
@@ -334,24 +347,54 @@ class CosService extends BaseService
             . '&q-signature=' . $signature;
     }
 
-    private function sanitizeBaseName($baseName)
-    {
-        $sanitized = preg_replace('/[^a-zA-Z0-9\-_]+/', '_', $baseName);
-        $sanitized = trim($sanitized, '._-');
-        if ($sanitized === '') {
-            $sanitized = 'file_' . date('YmdHis');
-        }
-        return substr($sanitized, 0, 80);
-    }
-
     private function encodeKey($key)
     {
-        $key = ltrim(str_replace(['\\'], '/', $key), '/');
-        if ($key === '') {
-            return '';
-        }
-        $segments = array_map('rawurlencode', explode('/', $key));
-        return implode('/', $segments);
+        return $this->encodeObjectKey($key);
+    }
+
+    private function getFolderListOnly($path)
+    {
+        $fullPrefix = $this->buildPrefix($path);
+        $endpoint = $this->getEndpoint();
+        $host = $this->getHost();
+        $folders = [];
+        $seen = [];
+        $pageToken = '';
+
+        do {
+            $query = [
+                'prefix' => $fullPrefix,
+                'delimiter' => '/',
+                'max-keys' => 1000
+            ];
+            if ($pageToken !== '') {
+                $query['marker'] = $pageToken;
+            }
+
+            $authorization = $this->generateAuthorization('GET', '/', $query, $host);
+            $url = $endpoint . '/?' . http_build_query($query);
+            $response = $this->makeRequest($url, 'GET', [
+                'Host: ' . $host,
+                'Authorization: ' . $authorization,
+                'User-Agent: TEMediaFolder/1.0'
+            ]);
+
+            $parsed = $this->parseListResponse($response, $fullPrefix, $path, $pageToken, 1000);
+            foreach ($parsed['folders'] as $folder) {
+                if (!isset($seen[$folder['path']])) {
+                    $seen[$folder['path']] = true;
+                    $folders[] = $folder;
+                }
+            }
+            $pageToken = !empty($parsed['has_more']) ? (string)$parsed['next_token'] : '';
+        } while ($pageToken !== '');
+
+        return [
+            'ok' => true,
+            'folders' => $folders,
+            'files' => [],
+            'server_paged' => false
+        ];
     }
 
     private function makeRequest($url, $method = 'GET', $headers = [], $body = null)
@@ -388,7 +431,7 @@ class CosService extends BaseService
         return $response;
     }
 
-    private function parseListResponse($response, $fullPrefix, $path)
+    private function parseListResponse($response, $fullPrefix, $path, $pageToken = '', $pageSize = 60)
     {
         $xml = @simplexml_load_string($response);
         if ($xml === false) {
@@ -399,11 +442,10 @@ class CosService extends BaseService
         if (isset($xml->CommonPrefixes)) {
             foreach ($xml->CommonPrefixes as $cp) {
                 $prefix = (string)$cp->Prefix;
-                $name = trim($prefix, '/');
-                
-                if ($fullPrefix !== '') {
-                    $name = substr($name, strlen($fullPrefix));
-                }
+                $relativePrefix = $fullPrefix !== '' && strpos($prefix, $fullPrefix) === 0
+                    ? substr($prefix, strlen($fullPrefix))
+                    : $this->stripConfiguredPrefix($prefix, $this->cosConfig['prefix'] ?? '');
+                $name = trim($relativePrefix, '/');
                 
                 if ($name !== '') {
                     $folders[] = [
@@ -457,7 +499,21 @@ class CosService extends BaseService
             $files = array_merge($files, $items);
         }
 
-        return ['folders' => $folders, 'files' => $files];
+        $nextToken = isset($xml->NextMarker) ? trim((string)$xml->NextMarker) : '';
+        $isTruncated = isset($xml->IsTruncated) && strtolower((string)$xml->IsTruncated) === 'true';
+
+        $nextToken = ($isTruncated && $nextToken !== '') ? $nextToken : '';
+
+        return [
+            'ok' => true,
+            'folders' => $folders,
+            'files' => $files,
+            'page_token' => $pageToken,
+            'next_token' => $nextToken,
+            'has_more' => $isTruncated && $nextToken !== '',
+            'page_size' => (int)$pageSize,
+            'server_paged' => true
+        ];
     }
 
     private function extractObjectKey($fileUrl)
@@ -481,7 +537,7 @@ class CosService extends BaseService
             return '';
         }
 
-        $normalized = trim($key, '/');
+        $normalized = $this->stripConfiguredPrefix($key, $this->cosConfig['prefix'] ?? '');
         if ($normalized === '') {
             return '';
         }

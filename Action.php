@@ -11,6 +11,7 @@ use TypechoPlugin\TEMediaFolder\Core\ActionListHandler;
 use TypechoPlugin\TEMediaFolder\Core\ActionUploadHandler;
 use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
 use TypechoPlugin\TEMediaFolder\Services\CosService;
+use TypechoPlugin\TEMediaFolder\Services\BitifulService;
 use TypechoPlugin\TEMediaFolder\Services\LocalFileService;
 use TypechoPlugin\TEMediaFolder\Services\LskyService;
 use TypechoPlugin\TEMediaFolder\Services\OssService;
@@ -33,6 +34,10 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
         'temf-oss-upload' => ['handler' => 'handleCloudStorageUpload', 'type' => 'oss'],
         'temf-oss-delete' => ['handler' => 'handleCloudDeleteAction', 'type' => 'oss'],
         'temf-oss-rename' => ['handler' => 'handleCloudRenameAction', 'type' => 'oss'],
+        'temf-bitiful-list' => ['handler' => 'handleCloudStorageList', 'type' => 'bitiful'],
+        'temf-bitiful-upload' => ['handler' => 'handleCloudStorageUpload', 'type' => 'bitiful'],
+        'temf-bitiful-delete' => ['handler' => 'handleCloudDeleteAction', 'type' => 'bitiful'],
+        'temf-bitiful-rename' => ['handler' => 'handleCloudRenameAction', 'type' => 'bitiful'],
         'temf-upyun-list' => ['handler' => 'handleCloudStorageList', 'type' => 'upyun'],
         'temf-upyun-upload' => ['handler' => 'handleCloudStorageUpload', 'type' => 'upyun'],
         'temf-upyun-delete' => ['handler' => 'handleCloudDeleteAction', 'type' => 'upyun'],
@@ -50,6 +55,7 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
         'temf-multi-rename' => ['handler' => 'handleMultiRenameAction', 'type' => null],
         'temf-multi-delete' => ['handler' => 'handleMultiDeleteAction', 'type' => null],
         'temf-test-upyun' => ['handler' => 'handleTestUpyunConnection', 'type' => null],
+        'temf-test-bitiful' => ['handler' => 'handleTestBitifulConnection', 'type' => null],
     ];
 
     public function __construct($request = null, $response = null, $params = null)
@@ -161,11 +167,17 @@ class TEMediaFolder_Action extends \Typecho_Widget implements \Widget\ActionInte
         $this->getUploadHandler()->testUpyunConnection();
     }
 
+    private function handleTestBitifulConnection()
+    {
+        $this->getUploadHandler()->testBitifulConnection();
+    }
+
     public function getServiceClass($storageType)
     {
         $serviceMap = [
             'cos' => CosService::class,
             'oss' => OssService::class,
+            'bitiful' => BitifulService::class,
             'upyun' => UpyunService::class,
             'lsky' => LskyService::class,
         ];

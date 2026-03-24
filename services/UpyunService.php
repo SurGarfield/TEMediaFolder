@@ -22,7 +22,7 @@ class UpyunService extends BaseService
             && !empty($this->upyunConfig['password']);
     }
 
-    public function getFileList($path = '')
+    public function getFileList($path = '', $options = [])
     {
         if (!$this->isConfigured()) {
             return ['folders' => [], 'files' => []];
@@ -31,6 +31,12 @@ class UpyunService extends BaseService
         try {
             $bucket = $this->upyunConfig['bucket'];
             $cleanPath = trim($path, '/');
+            $pageSize = isset($options['page_size']) ? (int)$options['page_size'] : 0;
+            if ($pageSize <= 0) {
+                $pageSize = 60;
+            }
+            $pageSize = max(1, min($pageSize, 200));
+            $pageToken = isset($options['page_token']) ? trim((string)$options['page_token']) : '';
             
             // 构造 URI：/bucket/path/ 或 /bucket/
             if (!empty($cleanPath)) {
@@ -43,15 +49,20 @@ class UpyunService extends BaseService
             $authData = $this->generateAuthorization($method, $uri);
             $url = "https://v0.api.upyun.com{$uri}";
             
-            $response = $this->makeRequest($url, $method, [
+            $headers = [
                 'Authorization: ' . $authData['authorization'],
                 'Date: ' . $authData['date'],
                 'User-Agent: TEMediaFolder/1.0',
-                'X-List-Limit: 1000',
+                'X-List-Limit: ' . $pageSize,
                 'X-List-Order: asc'
-            ]);
+            ];
+            if ($pageToken !== '') {
+                $headers[] = 'X-List-Iter: ' . $pageToken;
+            }
 
-            return $this->parseListResponse($response, $path);
+            $result = $this->makeRequest($url, $method, $headers, null, true);
+
+            return $this->parseListResponse($result['body'], $path, $this->extractListIter($result['headers']), $pageToken, $pageSize);
         } catch (\Exception $e) {
             return ['folders' => [], 'files' => []];
         }
@@ -159,7 +170,7 @@ class UpyunService extends BaseService
             // 使用原始文件名，而不是处理后的临时文件名
             $safeFileName = $this->sanitizeFileName($fileName);
             $bucket = $this->upyunConfig['bucket'];
-            $cleanPath = trim($targetPath, '/');
+            $cleanPath = trim($this->resolveNetworkUploadPath($targetPath), '/');
             
             // 构造 URI：/bucket/path/file.jpg
             if (!empty($cleanPath)) {
@@ -200,13 +211,17 @@ class UpyunService extends BaseService
             $this->cleanupTempFile($processedFilePath);
             
             // 构建返回结果
-            $options = ['name' => $safeFileName];
-            if ($this->isImageFile($safeFileName)) {
-                $options['thumbnail'] = $this->getThumbnailUrl($publicUrl);
-            }
-            if ($isCompressed) {
-                $options['compressed'] = true;
-            }
+            $options = $this->buildImageUploadOptions(
+                $safeFileName,
+                $publicUrl,
+                $isCompressed,
+                [],
+                [],
+                $this->isImageFile($safeFileName) ? $this->getThumbnailUrl($publicUrl) : null
+            );
+            $options['size'] = strlen($body);
+            $options['size_human'] = $this->formatFileSizeHuman($options['size']);
+            $options['directory'] = $this->extractDirectoryFromPath(trim($cleanPath . '/' . $safeFileName, '/'));
             
             return $this->buildUploadResult(true, $publicUrl, $safeFileName, $options);
         } catch (\Exception $e) {
@@ -285,7 +300,7 @@ class UpyunService extends BaseService
         ];
     }
 
-    private function parseListResponse($response, $path)
+    private function parseListResponse($response, $path, $nextToken = '', $pageToken = '', $pageSize = 60)
     {
         $folders = [];
         $files = [];
@@ -331,7 +346,18 @@ class UpyunService extends BaseService
             }
         }
         
-        return ['folders' => $folders, 'files' => $files];
+        $nextToken = $nextToken !== '' ? $nextToken : '';
+
+        return [
+            'ok' => true,
+            'folders' => $folders,
+            'files' => $files,
+            'page_token' => $pageToken,
+            'next_token' => $nextToken,
+            'has_more' => $nextToken !== '',
+            'page_size' => (int)$pageSize,
+            'server_paged' => true
+        ];
     }
 
     private function getPublicUrl($path)
@@ -379,7 +405,7 @@ class UpyunService extends BaseService
         return implode('/', $segments);
     }
 
-    private function makeRequest($url, $method = 'GET', $headers = [], $body = null)
+    private function makeRequest($url, $method = 'GET', $headers = [], $body = null, $withHeaders = false)
     {
         $result = HttpClient::request($url, $method, $headers, $body, [
             'timeout' => 30,
@@ -394,6 +420,12 @@ class UpyunService extends BaseService
         $curlError = (string)($result['error'] ?? '');
 
         if ($httpCode >= 200 && $httpCode < 300) {
+            if ($withHeaders) {
+                return [
+                    'body' => $response,
+                    'headers' => (string)($result['headers'] ?? '')
+                ];
+            }
             return $response;
         }
         
@@ -409,21 +441,24 @@ class UpyunService extends BaseService
         throw new \Exception($errorMsg);
     }
 
+    private function extractListIter($rawHeaders)
+    {
+        if (!is_string($rawHeaders) || $rawHeaders === '') {
+            return '';
+        }
+
+        if (preg_match('/^x-list-iter\s*:\s*(.+)$/im', $rawHeaders, $matches)) {
+            return trim($matches[1]);
+        }
+
+        return '';
+    }
+
     protected function sanitizeFileName($fileName)
     {
         // 移除或替换不安全的字符
         $fileName = preg_replace('/[^\w\-\.]+/u', '_', $fileName);
         return $fileName;
-    }
-
-    private function sanitizeBaseName($baseName)
-    {
-        $sanitized = preg_replace('/[^a-zA-Z0-9\-_]+/', '_', $baseName);
-        $sanitized = trim($sanitized, '._-');
-        if ($sanitized === '') {
-            $sanitized = 'file_' . date('YmdHis');
-        }
-        return substr($sanitized, 0, 80);
     }
 
     private function normalizePath($path)
@@ -439,12 +474,11 @@ class UpyunService extends BaseService
      */
     private function getThumbnailUrl($originalUrl)
     {
-        // 获取配置的缩略图尺寸
-        $thumbSize = $this->config->get('thumbSize', 120);
-        
-        // 又拍云图片处理参数：居中裁剪成正方形缩略图
-        // 格式：!/crop/宽x高/gravity/center
-        return $originalUrl . '!/crop/' . $thumbSize . 'x' . $thumbSize . '/gravity/center';
+        $thumbSize = $this->getDefaultThumbSize();
+
+        // 又拍云 URL 作图中，/crop 需要明确裁剪区域参数（含偏移量），
+        // 当前场景更适合使用 /both/{w}x{h} 生成居中裁剪后的方形缩略图。
+        return $originalUrl . '!/both/' . $thumbSize . 'x' . $thumbSize;
     }
 }
 

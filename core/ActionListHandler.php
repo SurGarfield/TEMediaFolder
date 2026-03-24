@@ -6,6 +6,8 @@ use TypechoPlugin\TEMediaFolder\Services\LskyService;
 
 class ActionListHandler
 {
+    const PAGED_STORAGES = ['cos', 'oss', 'bitiful', 'upyun'];
+
     private $action;
 
     public function __construct($action)
@@ -25,7 +27,7 @@ class ActionListHandler
             $service = new $serviceClass($this->action->getActionConfig());
             $request = $this->action->getActionRequest();
             $path = $request->get('temf_path', '');
-            $result = $service->getFileList($path);
+            $result = $this->resolveStorageListResult($service, $storageType, $request, $path);
             $this->action->sendJsonResponse($result);
         } catch (\Throwable $e) {
             $this->action->sendJsonResponse(['folders' => [], 'files' => []]);
@@ -38,6 +40,11 @@ class ActionListHandler
             $service = $this->action->getServiceOrFail('local');
             if ($service === null) {
                 return;
+            }
+
+            $request = $this->action->getActionRequest();
+            if ($request->get('temf_rebuild_index', '0') === '1' && method_exists($service, 'rebuildIndex')) {
+                $service->rebuildIndex();
             }
 
             $files = [];
@@ -54,14 +61,11 @@ class ActionListHandler
 
             $config = $this->action->getActionConfig();
             $paginationRows = max(1, intval($config->get('paginationRows', 4)));
-            $thumbSize = max(1, intval($config->get('thumbSize', 120)));
-
             $this->action->sendJsonResponse([
                 'ok' => true,
                 'files' => $files,
                 'groups' => $groups,
-                'paginationRows' => $paginationRows,
-                'thumbSize' => $thumbSize
+                'paginationRows' => $paginationRows
             ]);
         } catch (\Throwable $e) {
             $this->action->sendJsonResponse(['ok' => false, 'msg' => 'Failed to load local files: ' . $e->getMessage()]);
@@ -114,12 +118,7 @@ class ActionListHandler
                 return;
             }
 
-            if ($storageType === 'lsky') {
-                $useAlbum = $request->get('use_album', '0') === '1';
-                $result = $service->getFileList($path, $useAlbum);
-            } else {
-                $result = $service->getFileList($path);
-            }
+            $result = $this->resolveStorageListResult($service, $storageType, $request, $path);
 
             $this->action->sendJsonResponse($result);
         } catch (\Throwable $e) {
@@ -128,5 +127,23 @@ class ActionListHandler
                 'msg' => 'Multi list error: ' . $e->getMessage()
             ]);
         }
+    }
+
+    private function resolveStorageListResult($service, $storageType, $request, $path)
+    {
+        if ($storageType === 'lsky') {
+            $useAlbum = $request->get('use_album', '0') === '1';
+            return $service->getFileList($path, $useAlbum);
+        }
+
+        if (in_array($storageType, self::PAGED_STORAGES, true)) {
+            return $service->getFileList($path, [
+                'page_token' => $request->get('temf_page_token', ''),
+                'page_size' => $request->get('temf_page_size', 0),
+                'folders_only' => $request->get('temf_folders_only', '0') === '1'
+            ]);
+        }
+
+        return $service->getFileList($path);
     }
 }

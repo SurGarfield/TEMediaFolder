@@ -7,6 +7,8 @@ use TypechoPlugin\TEMediaFolder\Core\HttpClient;
 
 class LskyService
 {
+    const DEFAULT_THUMB_SIZE = 120;
+
     private $config;
     private $lskyConfig;
     private $cachedStorageId = null;
@@ -35,40 +37,64 @@ class LskyService
             return ['ok' => false, 'msg' => '缺少图片ID'];
         }
 
-        if (!ctype_digit($fileId)) {
-            return ['ok' => false, 'msg' => '无效的图片ID'];
-        }
-
-        $intId = (int)$fileId;
-        if ($intId <= 0) {
-            return ['ok' => false, 'msg' => '无效的图片ID'];
-        }
-
         try {
-            $endpoint = rtrim($this->lskyConfig['url'], '/') . '/api/v2/user/photos';
-            $payload = json_encode([$intId]);
-            if ($payload === false) {
-                throw new \Exception('Failed to encode payload');
+            $baseUrl = rtrim($this->lskyConfig['url'], '/');
+
+            if (ctype_digit($fileId)) {
+                $intId = (int)$fileId;
+                if ($intId <= 0) {
+                    return ['ok' => false, 'msg' => '无效的图片ID'];
+                }
+
+                $endpoint = $baseUrl . '/api/v2/user/photos';
+                $payload = json_encode([$intId]);
+                if ($payload === false) {
+                    throw new \Exception('Failed to encode payload');
+                }
+
+                $response = $this->makeRequest($endpoint, 'DELETE', ['Content-Type: application/json'], $payload);
+                return $this->parseDeleteResponse($response);
             }
 
-            $response = $this->makeRequest($endpoint, 'DELETE', ['Content-Type: application/json'], $payload);
+            $candidateEndpoints = [
+                $baseUrl . '/api/v1/images/' . rawurlencode($fileId),
+                $baseUrl . '/api/v2/user/photos/' . rawurlencode($fileId),
+                $baseUrl . '/api/v1/photos/' . rawurlencode($fileId)
+            ];
 
-            if ($response) {
-                $data = json_decode($response, true);
-                if (is_array($data)) {
-                    if (isset($data['status']) && ($data['status'] === true || $data['status'] === 'success')) {
-                        return ['ok' => true];
+            foreach ($candidateEndpoints as $endpoint) {
+                try {
+                    $response = $this->makeRequest($endpoint, 'DELETE');
+                    $parsed = $this->parseDeleteResponse($response);
+                    if (!empty($parsed['ok'])) {
+                        return $parsed;
                     }
-                    if (isset($data['message'])) {
-                        return ['ok' => false, 'msg' => $data['message']];
-                    }
+                } catch (\Exception $e) {
+                    continue;
                 }
             }
 
-            return ['ok' => true];
+            return ['ok' => false, 'msg' => '删除失败: 无法识别图片ID'];
         } catch (\Exception $e) {
             return ['ok' => false, 'msg' => '删除失败: ' . $e->getMessage()];
         }
+    }
+
+    private function parseDeleteResponse($response)
+    {
+        if ($response) {
+            $data = json_decode($response, true);
+            if (is_array($data)) {
+                if (isset($data['status']) && ($data['status'] === true || $data['status'] === 'success' || $data['status'] === 200 || $data['status'] === '200')) {
+                    return ['ok' => true];
+                }
+                if (isset($data['message'])) {
+                    return ['ok' => false, 'msg' => $data['message']];
+                }
+            }
+        }
+
+        return ['ok' => true];
     }
 
     /**
@@ -873,7 +899,7 @@ class LskyService
 
         try {
             $baseUrl = rtrim($this->lskyConfig['url'], '/');
-            $safeFileName = basename($fileName);
+            $safeFileName = $this->resolveUploadFileName($fileName, $compressionResult, $processedFilePath);
             
             // 依据官方文档优先尝试 V2，再尝试 V1
             // V2: servers: /api/v2 + path /upload => /api/v2/upload
@@ -899,20 +925,6 @@ class LskyService
             if ($result !== null) {
                 return $result;
             }
-
-            $result = $this->attemptV1AuthVariantsUpload($baseUrl, $uploadEndpoints, $processedFilePath, $mimeType, $safeFileName, $filePath, $compressionResult);
-            if ($result !== null) {
-                return $result;
-            }
-
-            $result = $this->attemptCompatibilityUpload($baseUrl, $uploadEndpoints, $paramNames, $processedFilePath, $mimeType, $safeFileName, $filePath, $compressionResult);
-            if ($result !== null) {
-                if (!empty($result['ok'])) {
-                    return $result;
-                }
-                \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::cleanupTempFile($processedFilePath);
-                return $result;
-            }
             
             \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::cleanupTempFile($processedFilePath);
             return ['ok' => false, 'msg' => 'All upload endpoints failed'];
@@ -931,13 +943,17 @@ class LskyService
             foreach ($paramNames as $paramName) {
                 try {
                     $url = $baseUrl . $endpoint;
-                    $curlFile = new \CURLFile($processedFilePath, $mimeType, basename($processedFilePath));
+                    $curlFile = new \CURLFile($processedFilePath, $mimeType, $safeFileName);
                     $postData = $this->buildStandardPostData($endpoint, $paramName, $curlFile);
                     $headers = ['Expect:'];
                     $data = $this->decodeUploadResponse($url, $headers, $postData);
                     $result = $this->buildResultIfSuccessful($data, $safeFileName, $filePath, $compressionResult, $processedFilePath);
                     if ($result !== null) {
                         return $result;
+                    }
+
+                    if (!$this->shouldContinueUploadAttempt($data)) {
+                        return ['ok' => false, 'msg' => $this->extractUploadFailureMessage($data)];
                     }
 
                     if (strpos($endpoint, '/v1/') !== false && $this->isStrategyNotFound($data)) {
@@ -948,6 +964,9 @@ class LskyService
                             $result = $this->buildResultIfSuccessful($data, $safeFileName, $filePath, $compressionResult, $processedFilePath);
                             if ($result !== null) {
                                 return $result;
+                            }
+                            if (!$this->shouldContinueUploadAttempt($data)) {
+                                return ['ok' => false, 'msg' => $this->extractUploadFailureMessage($data)];
                             }
                         }
                     }
@@ -972,7 +991,7 @@ class LskyService
             foreach ($authVariants as $authHeaders) {
                 try {
                     $url = $baseUrl . $endpoint;
-                    $curlFile = new \CURLFile($processedFilePath, $mimeType, basename($processedFilePath));
+                    $curlFile = new \CURLFile($processedFilePath, $mimeType, $safeFileName);
                     $paramVariants = $this->buildV1AuthParamVariants($curlFile);
 
                     foreach ($paramVariants as $postData) {
@@ -981,6 +1000,9 @@ class LskyService
                         $result = $this->buildResultIfSuccessful($data, $safeFileName, $filePath, $compressionResult, $processedFilePath);
                         if ($result !== null) {
                             return $result;
+                        }
+                        if (!$this->shouldContinueUploadAttempt($data)) {
+                            return ['ok' => false, 'msg' => $this->extractUploadFailureMessage($data)];
                         }
                     }
                 } catch (\Exception $e) {
@@ -995,7 +1017,22 @@ class LskyService
     private function decodeUploadResponse($url, $headers, $postData)
     {
         $response = $this->makeRequest($url, 'POST', $headers, $postData);
-        return json_decode($response, true);
+        $data = json_decode($response, true);
+        if (is_array($data)) {
+            return $data;
+        }
+
+        $trimmed = trim((string)$response);
+        if ($trimmed !== '' && preg_match('#^https?://#i', $trimmed)) {
+            return [
+                'status' => true,
+                'data' => [
+                    'url' => $trimmed
+                ]
+            ];
+        }
+
+        return ['raw_response' => $trimmed];
     }
 
     private function buildResultIfSuccessful($data, $safeFileName, $filePath, $compressionResult, $processedFilePath)
@@ -1004,7 +1041,12 @@ class LskyService
             return null;
         }
 
-        return $this->buildLskyUploadResult($data['data'], $safeFileName, $filePath, $compressionResult, $processedFilePath);
+        $uploadData = $this->extractUploadDataPayload($data);
+        if (!is_array($uploadData)) {
+            return null;
+        }
+
+        return $this->buildLskyUploadResult($uploadData, $safeFileName, $filePath, $compressionResult, $processedFilePath);
     }
 
     private function buildStandardPostData($endpoint, $paramName, $curlFile)
@@ -1122,18 +1164,19 @@ class LskyService
 
     private function processCompatibilityResponse($data, $safeFileName, $filePath, $compressionResult, $processedFilePath)
     {
-        if (!$this->hasUploadStatus($data)) {
-            return ['continue' => true, 'result' => null];
+        if (!$this->hasUploadStatus($data) && !$this->extractUploadDataPayload($data)) {
+            return ['continue' => false, 'result' => ['ok' => false, 'msg' => $this->extractUploadFailureMessage($data)]];
         }
 
-        if ($this->isUploadStatusSuccess($data['status'])) {
-            if (!isset($data['data'])) {
+        if ($this->isSuccessfulUploadResponse($data)) {
+            $uploadData = $this->extractUploadDataPayload($data);
+            if (!is_array($uploadData)) {
                 return ['continue' => true, 'result' => null];
             }
 
             return [
                 'continue' => false,
-                'result' => $this->buildLskyUploadResult($data['data'], $safeFileName, $filePath, $compressionResult, $processedFilePath)
+                'result' => $this->buildLskyUploadResult($uploadData, $safeFileName, $filePath, $compressionResult, $processedFilePath)
             ];
         }
 
@@ -1143,6 +1186,40 @@ class LskyService
         }
 
         return ['continue' => false, 'result' => ['ok' => false, 'msg' => $errorMsg]];
+    }
+
+    private function shouldContinueUploadAttempt($data)
+    {
+        if (!is_array($data)) {
+            return false;
+        }
+
+        $message = $this->extractUploadFailureMessage($data);
+        return strpos($message, 'file 不能为空') !== false
+            || strpos($message, 'image 不能为空') !== false
+            || strpos($message, '服务异常') !== false
+            || strpos($message, 'HTTP 422') !== false
+            || strpos($message, 'All upload endpoints failed') !== false
+            || $this->isStrategyNotFound($data);
+    }
+
+    private function extractUploadFailureMessage($data)
+    {
+        if (!is_array($data)) {
+            return 'Upload failed';
+        }
+
+        if (!empty($data['message'])) {
+            return (string)$data['message'];
+        }
+        if (!empty($data['error'])) {
+            return (string)$data['error'];
+        }
+        if (!empty($data['raw_response'])) {
+            return (string)$data['raw_response'];
+        }
+
+        return 'Upload failed';
     }
 
     private function attemptCompatibilityCsrfRetry($exception, $url, $postData, $safeFileName, $filePath, $compressionResult, $processedFilePath)
@@ -1538,9 +1615,7 @@ class LskyService
             return $thumbnailData['thumbnail_url'];
         }
         
-        // 否则，尝试添加缩略图参数
-        // 注意：这取决于Lsky的具体配置，可能需要根据实际情况调整
-        $thumbSize = $this->config->get('thumbSize', 120);
+        $thumbSize = self::DEFAULT_THUMB_SIZE;
         $thumbParam = 'thumbnail=' . $thumbSize . 'x' . $thumbSize;
         
         if (strpos($originalUrl, '?') !== false) {
@@ -1556,8 +1631,24 @@ class LskyService
             return $uploadData['links']['url'];
         }
 
+        if (isset($uploadData['links']['markdown']) && preg_match('/\((https?:\/\/[^\)]+)\)/', $uploadData['links']['markdown'], $matches)) {
+            return $matches[1];
+        }
+
+        if (isset($uploadData['links']['bbcode']) && preg_match('/\[img\](https?:\/\/[^\[]+)\[\/img\]/i', $uploadData['links']['bbcode'], $matches)) {
+            return $matches[1];
+        }
+
         if (isset($uploadData['public_url'])) {
             return $uploadData['public_url'];
+        }
+
+        if (isset($uploadData['src'])) {
+            return $uploadData['src'];
+        }
+
+        if (isset($uploadData['image_url'])) {
+            return $uploadData['image_url'];
         }
 
         if (isset($uploadData['pathname'])) {
@@ -1579,16 +1670,98 @@ class LskyService
 
     private function isUploadStatusSuccess($status)
     {
-        return $status === true || $status === 'success';
+        return $status === true
+            || $status === 1
+            || $status === 200
+            || $status === '1'
+            || $status === '200'
+            || $status === 'true'
+            || $status === 'success'
+            || $status === 'ok';
     }
 
     private function isSuccessfulUploadResponse($data)
     {
-        if (!$this->hasUploadStatus($data) || !isset($data['data']) || !is_array($data['data'])) {
+        if (!is_array($data)) {
             return false;
         }
 
-        return $this->isUploadStatusSuccess($data['status']);
+        $uploadData = $this->extractUploadDataPayload($data);
+        if (!is_array($uploadData)) {
+            return false;
+        }
+
+        if ($this->hasUploadStatus($data) && $this->isUploadStatusSuccess($data['status'])) {
+            return true;
+        }
+
+        return !empty($this->resolveLskyUploadUrl($uploadData));
+    }
+
+    private function extractUploadDataPayload($data)
+    {
+        if (!is_array($data)) {
+            return null;
+        }
+
+        $candidates = [];
+        if (array_key_exists('data', $data)) {
+            $candidates[] = $data['data'];
+            if (is_array($data['data'])) {
+                foreach (['image', 'photo', 'item', 'file'] as $key) {
+                    if (isset($data['data'][$key])) {
+                        $candidates[] = $data['data'][$key];
+                    }
+                }
+            }
+        }
+        $candidates[] = $data;
+
+        foreach ($candidates as $candidate) {
+            $normalized = $this->normalizeUploadPayloadCandidate($candidate);
+            if ($normalized !== null && $this->looksLikeUploadPayload($normalized)) {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    private function looksLikeUploadPayload(array $payload)
+    {
+        return !empty($this->resolveLskyUploadUrl($payload))
+            || isset($payload['id'])
+            || isset($payload['key'])
+            || isset($payload['pathname'])
+            || isset($payload['filename'])
+            || isset($payload['name']);
+    }
+
+    private function normalizeUploadPayloadCandidate($candidate)
+    {
+        if (is_string($candidate)) {
+            $trimmed = trim($candidate);
+            if ($trimmed !== '' && preg_match('#^https?://#i', $trimmed)) {
+                return ['url' => $trimmed];
+            }
+            return null;
+        }
+
+        if (!is_array($candidate)) {
+            return null;
+        }
+
+        if (array_keys($candidate) === range(0, count($candidate) - 1)) {
+            foreach ($candidate as $item) {
+                $normalized = $this->normalizeUploadPayloadCandidate($item);
+                if ($normalized !== null) {
+                    return $normalized;
+                }
+            }
+            return null;
+        }
+
+        return $candidate;
     }
 
     private function buildLskyUploadResult(array $uploadData, $fallbackFileName, $sourceFilePath, $compressionResult, $processedFilePath)
@@ -1603,11 +1776,30 @@ class LskyService
             'ok' => true,
             'url' => $this->resolveLskyUploadUrl($uploadData),
             'name' => $uploadData['name'] ?? ($uploadData['filename'] ?? $fallbackFileName),
-            'key' => $uploadData['key'] ?? ($uploadData['id'] ?? ''),
+            'id' => (string)($uploadData['id'] ?? ($uploadData['key'] ?? '')),
+            'key' => (string)($uploadData['key'] ?? ($uploadData['id'] ?? '')),
             'size' => $size
         ];
 
         return $this->addThumbnailToResult($result, $fallbackFileName, $uploadData, $compressionResult, $processedFilePath);
+    }
+
+    private function resolveUploadFileName($originalFileName, $compressionResult, $processedFilePath)
+    {
+        $originalInfo = pathinfo((string)$originalFileName);
+        $baseName = $originalInfo['filename'] ?? 'upload';
+        $extension = isset($originalInfo['extension']) ? strtolower((string)$originalInfo['extension']) : '';
+
+        if (is_array($compressionResult) && !empty($compressionResult['compressed']) && !empty($compressionResult['format'])) {
+            $extension = strtolower((string)$compressionResult['format']);
+        } elseif (is_string($processedFilePath) && $processedFilePath !== '') {
+            $processedExt = strtolower((string)pathinfo($processedFilePath, PATHINFO_EXTENSION));
+            if ($processedExt !== '' && $processedExt !== 'tmp') {
+                $extension = $processedExt;
+            }
+        }
+
+        return $baseName . ($extension !== '' ? '.' . $extension : '');
     }
 
     /**
@@ -1619,6 +1811,15 @@ class LskyService
             if ($this->isImageFile($fileName)) {
                 $result['thumbnail'] = $this->getThumbnailUrl($result['url'], $uploadData);
             }
+            if (empty($result['size']) && $processedFilePath && is_file($processedFilePath)) {
+                $size = @filesize($processedFilePath);
+                if ($size > 0) {
+                    $result['size'] = (int)$size;
+                }
+            }
+            if (empty($result['size_human']) && !empty($result['size'])) {
+                $result['size_human'] = $this->formatFileSizeHuman($result['size']);
+            }
             if ($compressionResult && $compressionResult['compressed']) {
                 $result['compressed'] = true;
                 $result['compression_info'] = $compressionResult;
@@ -1629,5 +1830,33 @@ class LskyService
             }
         }
         return $result;
+    }
+
+    private function formatFileSizeHuman($bytes)
+    {
+        $value = (float)$bytes;
+        if (!is_finite($value) || $value <= 0) {
+            return '';
+        }
+
+        $units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+        $index = 0;
+        while ($value >= 1024 && $index < count($units) - 1) {
+            $value /= 1024;
+            $index++;
+        }
+
+        if ($index === 0) {
+            return round($value) . ' ' . $units[$index];
+        }
+
+        $precision = $value >= 100 ? 0 : ($value >= 10 ? 1 : 2);
+        $formatted = number_format($value, $precision, '.', '');
+        if ($precision > 0) {
+            $formatted = preg_replace('/(\.\d*?[1-9])0+$/', '$1', $formatted);
+            $formatted = preg_replace('/\.0+$/', '', $formatted);
+        }
+
+        return $formatted . ' ' . $units[$index];
     }
 }

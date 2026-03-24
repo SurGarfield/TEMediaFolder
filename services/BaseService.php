@@ -6,6 +6,8 @@ use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
 
 abstract class BaseService
 {
+    const DEFAULT_THUMB_SIZE = 120;
+
     protected $config;
     
     public function __construct(ConfigManager $config)
@@ -50,6 +52,87 @@ abstract class BaseService
             \TypechoPlugin\TEMediaFolder\Core\ImageCompressor::cleanupTempFile($filePath);
         }
     }
+
+    protected function getDefaultThumbSize()
+    {
+        return self::DEFAULT_THUMB_SIZE;
+    }
+
+    protected function buildPathPrefix($basePrefix, $path)
+    {
+        $prefix = rtrim((string)$basePrefix, '/');
+        if (!empty($path)) {
+            $prefix = ($prefix === '' ? '' : $prefix . '/') . trim((string)$path, '/');
+        }
+        return $prefix === '' ? '' : $prefix . '/';
+    }
+
+    protected function sanitizeBaseName($baseName)
+    {
+        $sanitized = preg_replace('/[^a-zA-Z0-9\-_]+/', '_', (string)$baseName);
+        $sanitized = trim($sanitized, '._-');
+        if ($sanitized === '') {
+            $sanitized = 'file_' . date('YmdHis');
+        }
+        return substr($sanitized, 0, 80);
+    }
+
+    protected function encodeObjectKey($key)
+    {
+        $key = ltrim(str_replace(['\\'], '/', (string)$key), '/');
+        if ($key === '') {
+            return '';
+        }
+        $segments = array_map('rawurlencode', explode('/', $key));
+        return implode('/', $segments);
+    }
+
+    protected function resolveNetworkUploadPath($targetPath)
+    {
+        if (!$this->config->get('networkYearMonthFolders', false)) {
+            return trim((string)$targetPath, '/');
+        }
+
+        return date('Y/m');
+    }
+
+    protected function stripConfiguredPrefix($path, $configuredPrefix)
+    {
+        $normalizedPath = trim((string)$path, '/');
+        $normalizedPrefix = trim((string)$configuredPrefix, '/');
+        if ($normalizedPrefix !== '' && strpos($normalizedPath, $normalizedPrefix . '/') === 0) {
+            return substr($normalizedPath, strlen($normalizedPrefix) + 1);
+        }
+        return $normalizedPath;
+    }
+
+    protected function formatFileSizeHuman($bytes)
+    {
+        $value = (float)$bytes;
+        if (!is_finite($value) || $value <= 0) {
+            return '';
+        }
+
+        $units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+        $index = 0;
+        while ($value >= 1024 && $index < count($units) - 1) {
+            $value /= 1024;
+            $index++;
+        }
+
+        if ($index === 0) {
+            return round($value) . ' ' . $units[$index];
+        }
+
+        $precision = $value >= 100 ? 0 : ($value >= 10 ? 1 : 2);
+        $formatted = number_format($value, $precision, '.', '');
+        if ($precision > 0) {
+            $formatted = preg_replace('/(\.\d*?[1-9])0+$/', '$1', $formatted);
+            $formatted = preg_replace('/\.0+$/', '', $formatted);
+        }
+
+        return $formatted . ' ' . $units[$index];
+    }
    
     protected function buildUploadResult($success, $url = '', $name = '', $options = [])
     {
@@ -66,6 +149,24 @@ abstract class BaseService
         }
         
         return $result;
+    }
+
+    protected function buildImageUploadOptions($fileName, $publicUrl, $isCompressed = false, $compressionResult = [], $options = [], $thumbnailUrl = null)
+    {
+        if ($thumbnailUrl === null && $this->isImageFile($fileName)) {
+            $thumbnailUrl = $publicUrl;
+        }
+
+        if (!empty($thumbnailUrl)) {
+            $options['thumbnail'] = $thumbnailUrl;
+        }
+
+        if ($isCompressed) {
+            $options['compressed'] = true;
+            $options['compression_info'] = $compressionResult;
+        }
+
+        return $options;
     }
     
 

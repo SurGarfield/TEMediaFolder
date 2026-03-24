@@ -25,7 +25,7 @@ class OssService extends BaseService
             && !empty($this->ossConfig['accessKeySecret']);
     }
 
-    public function getFileList($path = '')
+    public function getFileList($path = '', $options = [])
     {
         if (!$this->isConfigured()) {
             return ['folders' => [], 'files' => []];
@@ -35,13 +35,27 @@ class OssService extends BaseService
             $fullPrefix = $this->buildPrefix($path);
             $host = $this->getHost();
             $scheme = $this->getScheme();
+            $pageSize = isset($options['page_size']) ? (int)$options['page_size'] : 0;
+            if ($pageSize <= 0) {
+                $pageSize = 60;
+            }
+            $pageSize = max(1, min($pageSize, 200));
+            $pageToken = isset($options['page_token']) ? trim((string)$options['page_token']) : '';
+            $foldersOnly = !empty($options['folders_only']);
+
+            if ($foldersOnly) {
+                return $this->getFolderListOnly($path);
+            }
             
             $query = [
                 'list-type' => '2',
                 'prefix' => $fullPrefix,
                 'delimiter' => '/',
-                'max-keys' => '1000'
+                'max-keys' => (string)$pageSize
             ];
+            if ($pageToken !== '') {
+                $query['continuation-token'] = $pageToken;
+            }
 
             $date = gmdate('D, d M Y H:i:s \G\M\T');
             $authorization = $this->generateAuthorization('GET', '/', $date);
@@ -55,7 +69,7 @@ class OssService extends BaseService
                 'User-Agent: TEMediaFolder/1.0'
             ]);
 
-            return $this->parseListResponse($response, $fullPrefix, $path);
+            return $this->parseListResponse($response, $fullPrefix, $path, $pageToken, $pageSize);
         } catch (\Exception $e) {
             return ['folders' => [], 'files' => []];
         }
@@ -202,6 +216,7 @@ class OssService extends BaseService
             $processedFilePath = $compressionResult['path'];
             $isCompressed = $compressionResult['compressed'];
             
+            $targetPath = $this->resolveNetworkUploadPath($targetPath);
             $fullPrefix = $this->buildPrefix($targetPath);
             // 使用压缩后文件名（如 .webp）
             $objectKey = ltrim($fullPrefix . basename($processedFilePath), '/');
@@ -226,11 +241,17 @@ class OssService extends BaseService
             $publicUrl = $this->getPublicUrl($objectKey);
             
             // 构建返回结果
-            $options = ['thumbnail' => $this->getThumbnailUrl($publicUrl)];
-            if ($isCompressed) {
-                $options['compressed'] = true;
-                $options['compression_info'] = $compressionResult;
-            }
+            $options = $this->buildImageUploadOptions(
+                basename($processedFilePath),
+                $publicUrl,
+                $isCompressed,
+                $compressionResult,
+                [],
+                $this->getThumbnailUrl($publicUrl)
+            );
+            $options['size'] = strlen($body);
+            $options['size_human'] = $this->formatFileSizeHuman($options['size']);
+            $options['directory'] = $this->extractDirectoryFromKey($objectKey);
             
             return $this->buildUploadResult(true, $publicUrl, basename($processedFilePath), $options);
         } catch (\Exception $e) {
@@ -240,11 +261,7 @@ class OssService extends BaseService
 
     private function buildPrefix($path)
     {
-        $prefix = rtrim($this->ossConfig['prefix'], '/');
-        if (!empty($path)) {
-            $prefix = ($prefix === '' ? '' : $prefix . '/') . trim($path, '/');
-        }
-        return $prefix === '' ? '' : $prefix . '/';
+        return $this->buildPathPrefix($this->ossConfig['prefix'], $path);
     }
 
     private function getEndpoint()
@@ -259,6 +276,54 @@ class OssService extends BaseService
 
         $host = $this->getHost();
         return 'https://' . $host;
+    }
+
+    private function getFolderListOnly($path)
+    {
+        $fullPrefix = $this->buildPrefix($path);
+        $host = $this->getHost();
+        $scheme = $this->getScheme();
+        $folders = [];
+        $seen = [];
+        $pageToken = '';
+
+        do {
+            $query = [
+                'list-type' => '2',
+                'prefix' => $fullPrefix,
+                'delimiter' => '/',
+                'max-keys' => '1000'
+            ];
+            if ($pageToken !== '') {
+                $query['continuation-token'] = $pageToken;
+            }
+
+            $date = gmdate('D, d M Y H:i:s \G\M\T');
+            $authorization = $this->generateAuthorization('GET', '/', $date);
+            $url = $scheme . '://' . $host . '/?' . http_build_query($query);
+            $response = $this->makeRequest($url, 'GET', [
+                'Date: ' . $date,
+                'Authorization: ' . $authorization,
+                'Host: ' . $host,
+                'User-Agent: TEMediaFolder/1.0'
+            ]);
+
+            $parsed = $this->parseListResponse($response, $fullPrefix, $path, $pageToken, 1000);
+            foreach ($parsed['folders'] as $folder) {
+                if (!isset($seen[$folder['path']])) {
+                    $seen[$folder['path']] = true;
+                    $folders[] = $folder;
+                }
+            }
+            $pageToken = !empty($parsed['has_more']) ? (string)$parsed['next_token'] : '';
+        } while ($pageToken !== '');
+
+        return [
+            'ok' => true,
+            'folders' => $folders,
+            'files' => [],
+            'server_paged' => false
+        ];
     }
 
     private function getHost()
@@ -298,8 +363,7 @@ class OssService extends BaseService
 
     private function getThumbnailUrl($originalUrl)
     {
-        // 获取配置的缩略图尺寸
-        $thumbSize = $this->config->get('thumbSize', 120);
+        $thumbSize = $this->getDefaultThumbSize();
 
         $separator = strpos($originalUrl, '?') !== false ? '&' : '?';
         return $originalUrl . $separator . 'x-oss-process=image/resize,m_fill,w_' . $thumbSize . ',h_' . $thumbSize
@@ -364,27 +428,12 @@ class OssService extends BaseService
         return $response;
     }
 
-    private function sanitizeBaseName($baseName)
-    {
-        $sanitized = preg_replace('/[^a-zA-Z0-9\-_]+/', '_', $baseName);
-        $sanitized = trim($sanitized, '._-');
-        if ($sanitized === '') {
-            $sanitized = 'file_' . date('YmdHis');
-        }
-        return substr($sanitized, 0, 80);
-    }
-
     private function encodeKey($key)
     {
-        $key = ltrim(str_replace(['\\'], '/', $key), '/');
-        if ($key === '') {
-            return '';
-        }
-        $segments = array_map('rawurlencode', explode('/', $key));
-        return implode('/', $segments);
+        return $this->encodeObjectKey($key);
     }
 
-    private function parseListResponse($response, $fullPrefix, $path)
+    private function parseListResponse($response, $fullPrefix, $path, $pageToken = '', $pageSize = 60)
     {
         $xml = @simplexml_load_string($response);
         if ($xml === false) {
@@ -395,11 +444,10 @@ class OssService extends BaseService
         if (isset($xml->CommonPrefixes)) {
             foreach ($xml->CommonPrefixes as $cp) {
                 $prefix = (string)$cp->Prefix;
-                $name = trim($prefix, '/');
-                
-                if ($fullPrefix !== '') {
-                    $name = substr($name, strlen($fullPrefix));
-                }
+                $relativePrefix = $fullPrefix !== '' && strpos($prefix, $fullPrefix) === 0
+                    ? substr($prefix, strlen($fullPrefix))
+                    : $this->stripConfiguredPrefix($prefix, $this->ossConfig['prefix'] ?? '');
+                $name = trim($relativePrefix, '/');
                 
                 if ($name !== '') {
                     $folders[] = [
@@ -451,7 +499,21 @@ class OssService extends BaseService
             $files = array_merge($files, $items);
         }
 
-        return ['folders' => $folders, 'files' => $files];
+        $nextToken = isset($xml->NextContinuationToken) ? trim((string)$xml->NextContinuationToken) : '';
+        $isTruncated = isset($xml->IsTruncated) && strtolower((string)$xml->IsTruncated) === 'true';
+
+        $nextToken = ($isTruncated && $nextToken !== '') ? $nextToken : '';
+
+        return [
+            'ok' => true,
+            'folders' => $folders,
+            'files' => $files,
+            'page_token' => $pageToken,
+            'next_token' => $nextToken,
+            'has_more' => $isTruncated && $nextToken !== '',
+            'page_size' => (int)$pageSize,
+            'server_paged' => true
+        ];
     }
 
     private function extractObjectKey($fileUrl)
@@ -475,7 +537,7 @@ class OssService extends BaseService
             return '';
         }
 
-        $normalized = trim($key, '/');
+        $normalized = $this->stripConfiguredPrefix($key, $this->ossConfig['prefix'] ?? '');
         if ($normalized === '') {
             return '';
         }

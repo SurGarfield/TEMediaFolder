@@ -285,6 +285,7 @@
     var state = {
         cosLoaded: false,
         ossLoaded: false,
+        bitifulLoaded: false,
         upyunLoaded: false,
         lskyLoaded: false,
         multiLoaded: false,
@@ -302,10 +303,26 @@
             totalItems: 0,
             allFiles: []   // 存储所有文件
         },
+        remotePagination: {
+            enabled: false,
+            storage: '',
+            path: '',
+            currentToken: '',
+            nextToken: '',
+            hasMore: false,
+            pageSize: 0,
+            pageNumber: 1,
+            history: []
+        },
         folderStatsCache: {},
         currentFolders: [],
-        currentPath: ''
+        currentPath: '',
+        rootFolderHints: {}
     };
+
+    var DEFAULT_THUMB_SIZE = 120;
+    var lazyInitTimer = null;
+    var folderStatsTimer = null;
 
     var customSelects = (function () {
         var registry = new Map();
@@ -662,14 +679,37 @@
 
     function getEffectiveStorageSource() {
         var source = TEMF_CONF.source;
-        if (source === 'multi' && state.currentStorage) {
+        if (isMultiMode() && state.currentStorage) {
             source = state.currentStorage;
         }
         return String(source || '').toLowerCase();
     }
 
+    function isMultiMode() {
+        return String(TEMF_CONF.source || '').toLowerCase() === 'multi';
+    }
+
+    function isServerPagedStorage(source) {
+        var entry = storageRegistry[String(source || '').toLowerCase()];
+        return !!(entry && entry.serverPaged);
+    }
+
+    function resetRemotePagination(storage, path, options) {
+        options = options || {};
+        state.remotePagination.enabled = !!options.enabled;
+        state.remotePagination.storage = String(storage || '').toLowerCase();
+        state.remotePagination.path = normalizeDirectoryPath(path || '');
+        state.remotePagination.currentToken = options.currentToken || '';
+        state.remotePagination.nextToken = options.nextToken || '';
+        state.remotePagination.hasMore = !!options.hasMore;
+        state.remotePagination.pageSize = options.pageSize || 0;
+        state.remotePagination.pageNumber = options.pageNumber || 1;
+        state.remotePagination.history = Array.isArray(options.history) ? options.history.slice() : [];
+    }
+
     function isHierarchicalStorage(source) {
-        return source === 'cos' || source === 'oss' || source === 'upyun' || source === 'local';
+        var entry = storageRegistry[String(source || '').toLowerCase()];
+        return !!(entry && entry.hierarchical);
     }
 
     function isMonthPath(path) {
@@ -679,7 +719,7 @@
     function getParentPath(path, source) {
         var normalized = normalizeDirectoryPath(path || '');
         if (!normalized) return '';
-        if (source === 'local' && isMonthPath(normalized)) {
+        if (isLocalStorage(source) && isMonthPath(normalized)) {
             return '';
         }
         var parts = normalized.split('/');
@@ -814,6 +854,7 @@
                         return;
                     }
 
+                    invalidateDirectoryCaches();
                     var removedSet = new Set(urls);
                     state.pagination.allFiles = (state.pagination.allFiles || []).filter(function (file) {
                         return !removedSet.has(file.url);
@@ -892,6 +933,10 @@
         var method = fetchOptions.method || 'GET';
         var cacheKey = method + ':' + url;
 
+        if (method === 'GET' && !fetchOptions.cache) {
+            fetchOptions.cache = 'no-store';
+        }
+
         // 只缓存 GET 请求
         if (method === 'GET') {
             if (bustCache) {
@@ -949,32 +994,154 @@
             });
     }
 
+    function invalidateDirectoryCaches() {
+        state.requestCache = {};
+        state.folderStatsCache = {};
+    }
+
+    function rememberRootFolderHint(storageType, directoryPath) {
+        var storage = String(storageType || '').toLowerCase();
+        var normalized = normalizeDirectoryPath(directoryPath || '');
+        if (!storage || !normalized || normalized.indexOf('/') === -1 || !isCloudDirectoryStorage(storage)) {
+            return;
+        }
+
+        var rootFolder = normalized.split('/')[0];
+        if (!rootFolder) {
+            return;
+        }
+
+        if (!state.rootFolderHints[storage]) {
+            state.rootFolderHints[storage] = {};
+        }
+        state.rootFolderHints[storage][rootFolder] = true;
+    }
+
+    function buildCloudPageRequestOptions(storageType, path, options) {
+        var requestOptions = Object.assign({}, options || {});
+        var normalizedStorage = String(storageType || '').toLowerCase();
+        var normalizedPath = normalizeDirectoryPath(path || '');
+
+        if (isServerPagedStorage(normalizedStorage)) {
+            var pageSize = parseInt(requestOptions.pageSize, 10);
+            if (!pageSize || pageSize <= 0) {
+                pageSize = calculatePageSize();
+            }
+            requestOptions.pageSize = Math.max(1, pageSize);
+            requestOptions.pageToken = typeof requestOptions.pageToken === 'string' ? requestOptions.pageToken : '';
+        } else {
+            delete requestOptions.pageSize;
+            delete requestOptions.pageToken;
+        }
+
+        requestOptions._normalizedPath = normalizedPath;
+        return requestOptions;
+    }
+
+    function buildFoldersOnlyUrl(base, path, extraParams, bustCache) {
+        var parts = [];
+        if (path) {
+            parts.push('temf_path=' + encodeURIComponent(path));
+        }
+        if (Array.isArray(extraParams) && extraParams.length) {
+            parts = parts.concat(extraParams);
+        }
+        parts.push('temf_folders_only=1');
+        if (bustCache) {
+            parts.push('_ts=' + Date.now());
+        }
+        return base + (base.indexOf('?') >= 0 ? '&' : '?') + parts.join('&');
+    }
+
+    function mergeFoldersOnlyResult(base, path, data, callback, options) {
+        options = options || {};
+        var storageType = options.storageType || '';
+        if (!isServerPagedStorage(storageType) || options.foldersOnly) {
+            callback && callback(data);
+            return;
+        }
+
+        var folderUrl = buildFoldersOnlyUrl(base, path, options.extraParams || [], !!options.bustCache);
+        cachedFetch(folderUrl, { bustCache: !!options.bustCache, cache: 'no-store' })
+            .then(function (folderData) {
+                if (folderData && Array.isArray(folderData.folders) && folderData.folders.length) {
+                    data.folders = folderData.folders;
+                }
+                callback && callback(data);
+            })
+            .catch(function () {
+                callback && callback(data);
+            });
+    }
+
+    function resetCloudRootState(storageType) {
+        setCurrentPath('');
+        resetRemotePagination(storageType, '', { enabled: isServerPagedStorage(storageType) });
+
+        var dir = byId('temf-dir');
+        if (dir) {
+            dir.value = '';
+            if (typeof customSelects !== 'undefined' && customSelects && typeof customSelects.setValue === 'function') {
+                customSelects.setValue('temf-dir', '', { silent: true });
+            }
+        }
+    }
+
+    function getMeasuredGridColumns() {
+        var body = document.querySelector('#temf-modal .temf-body');
+        if (!body || body.clientWidth <= 0) {
+            return 0;
+        }
+
+        var probe = document.createElement('ul');
+        probe.className = 'temf-grid';
+        probe.style.position = 'absolute';
+        probe.style.visibility = 'hidden';
+        probe.style.pointerEvents = 'none';
+        probe.style.left = '0';
+        probe.style.right = '0';
+        probe.style.top = '0';
+        probe.style.width = '100%';
+
+        var item = document.createElement('li');
+        item.className = 'temf-item';
+        probe.appendChild(item);
+        body.appendChild(probe);
+
+        var styles = window.getComputedStyle(probe);
+        var columns = 0;
+        var template = styles.gridTemplateColumns || '';
+        if (template && template !== 'none') {
+            columns = template.split(' ').filter(function (part) {
+                return !!String(part).trim();
+            }).length;
+        }
+
+        if (probe.parentNode) {
+            probe.parentNode.removeChild(probe);
+        }
+
+        return Math.max(0, columns);
+    }
+
     /**
      * 动态计算每页显示的图片数量
      * 基于容器宽度、缩略图大小和配置的行数
      */
     function calculatePageSize() {
         var rows = parseInt(TEMF_CONF.paginationRows) || 4;  // 默认4行
-        var thumbSize = parseInt(TEMF_CONF.thumbSize) || 120; // 缩略图大小
-        var gap = 8; // grid gap
-
-        // 获取容器宽度
-        var body = document.querySelector('#temf-modal .temf-body');
-        if (!body) {
-            // 如果容器不存在，使用默认值
-            return rows * 5;
+        var cols = getMeasuredGridColumns();
+        if (!cols || cols <= 0) {
+            var body = document.querySelector('#temf-modal .temf-body');
+            if (!body || body.clientWidth <= 0) {
+                return rows * 4;
+            }
+            cols = Math.max(1, Math.floor((body.clientWidth - 24) / 132));
         }
-
-        var containerWidth = body.clientWidth - 24; // 减去padding
-
-        // 计算每行可以放多少张图片
-        var itemWidth = thumbSize + gap;
-        var cols = Math.floor(containerWidth / itemWidth);
-        cols = Math.max(1, cols); // 至少1列
 
         // 总数 = 行数 × 列数
         var pageSize = rows * cols;
-        return Math.max(pageSize, 10); // 至少10张
+        return Math.max(pageSize, cols); // 至少一行
     }
 
     function findItemByUrl(url) {
@@ -1035,24 +1202,14 @@
                     title.focus();
                 }
 
-                if (TEMF_CONF.source === 'multi' && !state.multiLoaded) {
+                if (isMultiMode() && !state.multiLoaded) {
                     multi.init();
                     state.multiLoaded = true;
-                } else if (TEMF_CONF.source === 'cos' && !state.cosLoaded) {
-                    cos.init();
-                    state.cosLoaded = true;
-                } else if (TEMF_CONF.source === 'oss' && !state.ossLoaded) {
-                    oss.init();
-                    state.ossLoaded = true;
-                } else if (TEMF_CONF.source === 'upyun' && !state.upyunLoaded) {
-                    upyun.init();
-                    state.upyunLoaded = true;
-                } else if (TEMF_CONF.source === 'lsky' && !state.lskyLoaded) {
-                    lsky.init();
-                    state.lskyLoaded = true;
-                } else if (TEMF_CONF.source === 'local') {
-                    localBrowser.init();
+                } else if (!isMultiMode()) {
+                    ensureSingleStorageLoaded(TEMF_CONF.source);
                 }
+
+                dragUpload.init();
             } catch (e) {
                 // open modal error
             }
@@ -1069,6 +1226,10 @@
                 m.classList.remove("open");
                 m.setAttribute("aria-hidden", "true");
                 m.setAttribute("inert", "");
+                dragUpload.hideDropzone();
+                if (upload && typeof upload.cancelStagePanel === 'function') {
+                    upload.cancelStagePanel();
+                }
 
                 if (document.activeElement && m.contains(document.activeElement)) {
                     document.activeElement.blur();
@@ -1091,7 +1252,7 @@
         }
 
         var source = TEMF_CONF.source;
-        if (source === 'multi') {
+        if (isMultiMode()) {
             var storage = state.currentStorage;
             if (!storage) {
                 return null;
@@ -1105,55 +1266,70 @@
             };
         }
 
-        if (source === 'local') {
-            var localDelete = sec.getAttribute('data-local-delete');
-            if (!localDelete) {
-                return null;
-            }
-            return {
-                url: localDelete,
-                storage: 'local'
-            };
+        var entry = storageRegistry[source];
+        if (!entry || !entry.deleteAttr) {
+            return null;
         }
 
-        if (source === 'cos') {
-            var cosDelete = sec.getAttribute('data-cos-delete');
-            if (cosDelete) {
-                return {
-                    url: cosDelete,
-                    storage: 'cos'
-                };
-            }
-        } else if (source === 'oss') {
-            var ossDelete = sec.getAttribute('data-oss-delete');
-            if (ossDelete) {
-                return {
-                    url: ossDelete,
-                    storage: 'oss'
-                };
-            }
-        } else if (source === 'upyun') {
-            var upyunDelete = sec.getAttribute('data-upyun-delete');
-            if (upyunDelete) {
-                return {
-                    url: upyunDelete,
-                    storage: 'upyun'
-                };
-            }
-        } else if (source === 'lsky') {
-            var lskyDelete = sec.getAttribute('data-lsky-delete');
-            if (lskyDelete) {
-                return {
-                    url: lskyDelete,
-                    storage: 'lsky'
-                };
-            }
+        var deleteUrl = sec.getAttribute(entry.deleteAttr);
+        if (deleteUrl) {
+            return {
+                url: deleteUrl,
+                storage: source
+            };
         }
 
         return null;
     }
 
-    var local = {
+    function getStorageUploadAttr(storageType) {
+        var entry = storageRegistry[storageType];
+        return entry && entry.uploadAttr ? entry.uploadAttr : '';
+    }
+
+    function getStorageEntry(storageType) {
+        return storageRegistry[String(storageType || '').toLowerCase()] || null;
+    }
+
+    function isLocalStorage(storageType) {
+        return String(storageType || '').toLowerCase() === 'local';
+    }
+
+    function isLskyStorage(storageType) {
+        return String(storageType || '').toLowerCase() === 'lsky';
+    }
+
+    function isCloudDirectoryStorage(storageType) {
+        var entry = getStorageEntry(storageType);
+        return !!(entry && entry.cloudDirectory);
+    }
+
+    function getThumbnailMode(storageType) {
+        var entry = getStorageEntry(storageType);
+        return entry && entry.thumbnailMode ? entry.thumbnailMode : 'none';
+    }
+
+    function getStorageRenameMeta(storageType) {
+        var entry = storageRegistry[storageType];
+        return {
+            attr: entry && entry.renameAttr ? entry.renameAttr : '',
+            supported: !!(entry && entry.supportsRename)
+        };
+    }
+
+    function getComputedUploadPath(storageType, path) {
+        var normalized = normalizeDirectoryPath(path || '');
+        if (!TEMF_CONF.networkYearMonthFolders || isLocalStorage(storageType) || isLskyStorage(storageType)) {
+            return normalized ? '/' + normalized : '/';
+        }
+
+        var now = new Date();
+        var yearMonth = now.getFullYear() + '/' + String(now.getMonth() + 1).padStart(2, '0');
+        return '/' + yearMonth;
+    }
+
+    function createLocalSelectorModule(localDataApi, localBrowserApi) {
+        return {
         buildYearMonth: function () {
             try {
                 var ySel = byId("temf-year");
@@ -1201,7 +1377,7 @@
                 var curYear = nowYM.year;
                 customSelects.setValue('temf-year', curYear, { silent: true });
 
-                this.buildMonths(curYear);
+            this.buildMonths(curYear);
 
                 if (nowYM && nowYM.month) {
                     customSelects.setValue('temf-month', nowYM.month, { silent: true });
@@ -1359,9 +1535,6 @@
             if (payload.paginationRows) {
                 TEMF_CONF.paginationRows = payload.paginationRows;
             }
-            if (payload.thumbSize) {
-                TEMF_CONF.thumbSize = payload.thumbSize;
-            }
         },
 
         fetchLatest: function (options) {
@@ -1369,6 +1542,7 @@
             if (!sec) return Promise.resolve();
             var url = sec.getAttribute('data-local-list');
             if (!url) return Promise.resolve();
+            var requestUrl = url;
 
             // 保存当前选择的年月
             var ySel = byId('temf-year');
@@ -1376,40 +1550,45 @@
             var currentYear = ySel ? ySel.value : null;
             var currentMonth = mSel ? mSel.value : null;
 
+            if (options && options.rebuildIndex) {
+                requestUrl += (requestUrl.indexOf('?') >= 0 ? '&' : '?') + 'temf_rebuild_index=1';
+            }
+
             var fetchOptions = options && options.bustCache ? { bustCache: true } : {};
-            return cachedFetch(url, fetchOptions)
+            return cachedFetch(requestUrl, fetchOptions)
                 .then(function (resp) {
                     if (!resp || resp.ok === false) {
                         return;
                     }
-                    local.updateDataFromResponse(resp);
-                    if (getEffectiveStorageSource() === 'local') {
-                        localBrowser.refresh();
+                    this.updateDataFromResponse(resp);
+                    if (isLocalStorage(getEffectiveStorageSource())) {
+                        localBrowserApi.refresh();
                         return;
                     }
 
-                    local.buildYearMonth();
+                    this.buildYearMonth();
                     if (currentYear && currentMonth) {
                         var ySel = byId('temf-year');
                         var mSel = byId('temf-month');
                         if (ySel && TEMF_CONF.data && TEMF_CONF.data[currentYear]) {
                             customSelects.setValue('temf-year', currentYear, { silent: true });
-                            local.buildMonths(currentYear);
+                            this.buildMonths(currentYear);
                             var paddedMonth = currentMonth.length === 1 ? '0' + currentMonth : currentMonth;
                             if (mSel && TEMF_CONF.data[currentYear][paddedMonth]) {
                                 customSelects.setValue('temf-month', currentMonth, { silent: true });
                             }
                         }
                     }
-                    local.renderCurrentMonth();
-                })
+                    this.renderCurrentMonth();
+                }.bind(this))
                 .catch(function (err) {
                     console.error('[TEMF] Failed to refresh local files', err);
                 });
         }
-    };
+        };
+    }
 
-    // 通用云存储处理器 - 合并 COS 和 OSS 的重复逻辑
+    // 通用云存储处理器
     var cloudStorage = {
         /**
          * 初始化目录选择器
@@ -1422,11 +1601,12 @@
             setSelectVisibility('temf-dir', false);
             this.initDirectorySelector(dir);
             setCurrentPath('');
+            resetRemotePagination(storageType, '', { enabled: isServerPagedStorage(storageType) });
 
             var self = this;
             this.fetch(storageType, '', function (data) {
                 self.syncDirectorySelector(dir, '', data.folders || []);
-                ui.renderFiles(data.files || [], data.folders || []);
+                ui.renderFiles(data.files || [], data.folders || [], data);
             }, options);
         },
 
@@ -1494,16 +1674,27 @@
             var base = sec.getAttribute(attrName);
             if (!base) return;
 
+            var requestOptions = buildCloudPageRequestOptions(storageType, path, options);
             var url = base;
             if (path) {
                 url += (base.indexOf('?') >= 0 ? '&' : '?') + 'temf_path=' + encodeURIComponent(path);
             }
+            if (requestOptions.pageToken) {
+                url += (url.indexOf('?') >= 0 ? '&' : '?') + 'temf_page_token=' + encodeURIComponent(requestOptions.pageToken);
+            }
+            if (requestOptions.pageSize) {
+                url += (url.indexOf('?') >= 0 ? '&' : '?') + 'temf_page_size=' + encodeURIComponent(String(requestOptions.pageSize));
+            }
 
             // 使用统一的 cachedFetch（自动处理缓存）
-            var fetchOptions = (options && options.bustCache) ? { bustCache: true } : {};
+            var fetchOptions = requestOptions.bustCache ? { bustCache: true } : {};
             cachedFetch(url, fetchOptions)
                 .then(function (data) {
-                    callback && callback(data);
+                    mergeFoldersOnlyResult(base, path, data, callback, {
+                        storageType: storageType,
+                        foldersOnly: requestOptions.foldersOnly,
+                        bustCache: requestOptions.bustCache
+                    });
                 })
                 .catch(function () {
                     callback && callback({ folders: [], files: [] });
@@ -1511,21 +1702,244 @@
         }
     };
 
-    // COS 和 OSS 使用共享的云存储处理器
-    var cos = {
-        init: function () { cloudStorage.init('cos'); },
-        fetch: function (path, callback) { cloudStorage.fetch('cos', path, callback); }
+    function createCloudProvider(type) {
+        return {
+            init: function () { cloudStorage.init(type); },
+            fetch: function (path, callback) { cloudStorage.fetch(type, path, callback); }
+        };
+    }
+
+    var cloudProviders = {
+        cos: createCloudProvider('cos'),
+        oss: createCloudProvider('oss'),
+        bitiful: createCloudProvider('bitiful'),
+        upyun: createCloudProvider('upyun')
     };
 
-    var oss = {
-        init: function () { cloudStorage.init('oss'); },
-        fetch: function (path, callback) { cloudStorage.fetch('oss', path, callback); }
+    var storageRegistry = {
+        local: {
+            label: '本地存储',
+            hierarchical: true,
+            serverPaged: false,
+            cloudDirectory: false,
+            thumbnailMode: 'none',
+            deleteAttr: 'data-local-delete',
+            uploadAttr: 'data-local-upload',
+            renameAttr: 'data-local-rename',
+            supportsRename: true,
+            ensureLoaded: function () {
+                localBrowser.init();
+                return true;
+            },
+            switchHandler: function () {
+                multi.hideDirectorySelectors();
+                multi.showLocalSelectors();
+                multi.loadLocalData();
+            }
+        },
+        cos: {
+            label: '腾讯云COS',
+            hierarchical: true,
+            serverPaged: true,
+            cloudDirectory: true,
+            thumbnailMode: 'query-thumb',
+            loadKey: 'cosLoaded',
+            deleteAttr: 'data-cos-delete',
+            uploadAttr: 'data-cos-upload',
+            renameAttr: 'data-cos-rename',
+            supportsRename: true,
+            provider: cloudProviders.cos
+        },
+        oss: {
+            label: '阿里云OSS',
+            hierarchical: true,
+            serverPaged: true,
+            cloudDirectory: true,
+            thumbnailMode: 'query-thumb',
+            loadKey: 'ossLoaded',
+            deleteAttr: 'data-oss-delete',
+            uploadAttr: 'data-oss-upload',
+            renameAttr: 'data-oss-rename',
+            supportsRename: true,
+            provider: cloudProviders.oss
+        },
+        bitiful: {
+            label: '缤纷云存储',
+            hierarchical: true,
+            serverPaged: true,
+            cloudDirectory: true,
+            thumbnailMode: 'bitiful',
+            loadKey: 'bitifulLoaded',
+            deleteAttr: 'data-bitiful-delete',
+            uploadAttr: 'data-bitiful-upload',
+            renameAttr: 'data-bitiful-rename',
+            supportsRename: true,
+            provider: cloudProviders.bitiful
+        },
+        upyun: {
+            label: '又拍云',
+            hierarchical: true,
+            serverPaged: true,
+            cloudDirectory: true,
+            thumbnailMode: 'none',
+            loadKey: 'upyunLoaded',
+            deleteAttr: 'data-upyun-delete',
+            uploadAttr: 'data-upyun-upload',
+            renameAttr: 'data-upyun-rename',
+            supportsRename: true,
+            provider: cloudProviders.upyun
+        },
+        lsky: {
+            label: '兰空图床',
+            hierarchical: false,
+            serverPaged: false,
+            cloudDirectory: false,
+            thumbnailMode: 'query-thumb',
+            loadKey: 'lskyLoaded',
+            deleteAttr: 'data-lsky-delete',
+            uploadAttr: 'data-lsky-upload',
+            renameAttr: 'data-lsky-rename',
+            supportsRename: false,
+            ensureLoaded: function () {
+                if (!state.lskyLoaded) {
+                    lsky.init();
+                    state.lskyLoaded = true;
+                    return true;
+                }
+                return false;
+            },
+            switchHandler: function () {
+                multi.hideLocalSelectors();
+                multi.initLskySelectors();
+                multi.loadLskyData();
+            }
+        }
     };
 
-    var upyun = {
-        init: function () { cloudStorage.init('upyun'); },
-        fetch: function (path, callback) { cloudStorage.fetch('upyun', path, callback); }
-    };
+    function createDragUploadModule(uploadApi) {
+        return {
+            initialized: false,
+            active: false,
+
+            init: function () {
+                if (this.initialized) return;
+                var dialog = document.querySelector('#temf-modal .temf-dialog');
+                if (!dialog) return;
+
+                var self = this;
+                this.ensureDropzone();
+
+                dialog.addEventListener('dragenter', function (e) {
+                    if (!self.hasFiles(e)) return;
+                    e.preventDefault();
+                    self.showDropzone();
+                });
+                dialog.addEventListener('dragover', function (e) {
+                    if (!self.hasFiles(e)) return;
+                    e.preventDefault();
+                    if (e.dataTransfer) {
+                        e.dataTransfer.dropEffect = 'copy';
+                    }
+                    self.showDropzone();
+                });
+                dialog.addEventListener('dragleave', function (e) {
+                    if (!self.hasFiles(e)) return;
+                    e.preventDefault();
+                    if (self.isLeavingViewport(e)) {
+                        self.hideDropzone();
+                    }
+                });
+                dialog.addEventListener('drop', function (e) {
+                    if (!self.hasFiles(e)) return;
+                    e.preventDefault();
+                    self.hideDropzone();
+                    var files = e.dataTransfer && e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+                    uploadApi.stageFiles(files);
+                });
+
+                document.addEventListener('dragleave', function (e) {
+                    if (!byId('temf-modal') || !byId('temf-modal').classList.contains('open')) return;
+                    if (!self.hasFiles(e)) return;
+                    if (self.isLeavingViewport(e)) {
+                        self.hideDropzone();
+                    }
+                });
+                document.addEventListener('dragend', function () {
+                    self.hideDropzone();
+                });
+
+                document.addEventListener('dragover', function (e) {
+                    if (!byId('temf-modal') || !byId('temf-modal').classList.contains('open')) return;
+                    if (!self.hasFiles(e)) return;
+                    e.preventDefault();
+                });
+                document.addEventListener('drop', function (e) {
+                    if (!byId('temf-modal') || !byId('temf-modal').classList.contains('open')) return;
+                    if (!self.hasFiles(e)) return;
+                    e.preventDefault();
+                });
+                this.initialized = true;
+            },
+
+            hasFiles: function (e) {
+                var dt = e.dataTransfer;
+                return !!(dt && dt.types && Array.prototype.indexOf.call(dt.types, 'Files') !== -1);
+            },
+
+            ensureDropzone: function () {
+                var dialog = document.querySelector('#temf-modal .temf-dialog');
+                if (!dialog) return null;
+                var zone = dialog.querySelector('.temf-dropzone');
+                if (!zone) {
+                    zone = document.createElement('div');
+                    zone.className = 'temf-dropzone';
+                    zone.innerHTML = '<div class="temf-dropzone-card"><div class="temf-dropzone-title">拖拽图片到这里</div><div class="temf-dropzone-subtitle">松开后加入待上传列表，确认无误后再开始上传。</div><div class="temf-dropzone-target"></div></div>';
+                    ['dragenter', 'dragover', 'dragleave', 'wheel', 'mousedown', 'click'].forEach(function (eventName) {
+                        zone.addEventListener(eventName, function (e) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                        });
+                    });
+                    zone.addEventListener('drop', function (e) {
+                        if (!this.hasFiles(e)) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        this.hideDropzone();
+                        var files = e.dataTransfer && e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+                        uploadApi.stageFiles(files);
+                    }.bind(this));
+                    dialog.appendChild(zone);
+                }
+                return zone;
+            },
+
+            showDropzone: function () {
+                var zone = this.ensureDropzone();
+                this.active = true;
+                if (zone) {
+                    var target = zone.querySelector('.temf-dropzone-target');
+                    if (target) {
+                        target.textContent = '当前目标：' + getComputedUploadPath(upload.getCurrentStorageType(), upload.getCurrentPath());
+                    }
+                    zone.classList.add('show');
+                }
+                var dialog = document.querySelector('#temf-modal .temf-dialog');
+                if (dialog) dialog.classList.add('temf-dragging');
+            },
+
+            hideDropzone: function () {
+                this.active = false;
+                var zone = document.querySelector('#temf-modal .temf-dropzone');
+                if (zone) zone.classList.remove('show');
+                var dialog = document.querySelector('#temf-modal .temf-dialog');
+                if (dialog) dialog.classList.remove('temf-dragging');
+            },
+
+            isLeavingViewport: function (e) {
+                return e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight;
+            }
+        };
+    }
 
     var lsky = {
         init: function (options) {
@@ -1562,7 +1976,7 @@
             var fetchPath = currentSelection === 'album' ? 'album' : '';
 
             this.fetch(fetchPath, function (data) {
-                ui.renderFiles(data.files || [], data.folders || []);
+                ui.renderFiles(data.files || [], data.folders || [], data);
                 customSelects.sync('temf-dir');
             }, options);
         },
@@ -1587,6 +2001,33 @@
             var fetchOptions = (options && options.bustCache) ? { bustCache: true } : {};
             cachedFetch(url, fetchOptions)
                 .then(function (data) {
+                    if (isServerPagedStorage(state.currentStorage) && !requestOptions.foldersOnly) {
+                        var folderUrl = base;
+                        var folderParams = ['storage_type=' + encodeURIComponent(state.currentStorage)];
+
+                        if (isLskyStorage(state.currentStorage) && path === 'album') {
+                            folderParams.push('use_album=1');
+                        } else if (path) {
+                            folderParams.push('temf_path=' + encodeURIComponent(path));
+                        }
+                        folderParams.push('temf_folders_only=1');
+                        if (fetchOptions.bustCache) {
+                            folderParams.push('_ts=' + Date.now());
+                        }
+
+                        folderUrl += (base.indexOf('?') >= 0 ? '&' : '?') + folderParams.join('&');
+                        cachedFetch(folderUrl, { bustCache: !!requestOptions.bustCache, cache: 'no-store' })
+                            .then(function (folderData) {
+                                if (folderData && Array.isArray(folderData.folders) && folderData.folders.length) {
+                                    data.folders = folderData.folders;
+                                }
+                                callback && callback(data);
+                            })
+                            .catch(function () {
+                                callback && callback(data);
+                            });
+                        return;
+                    }
                     callback && callback(data);
                 })
                 .catch(function () {
@@ -1667,10 +2108,10 @@
 
         switchTo: function (storageType) {
             state.currentStorage = storageType;
-            setCurrentPath('');
+            resetCloudRootState(storageType);
 
             // 性能优化：切换模式时清除缓存
-            ui._clearCache();
+            uiRender.clearCache();
 
             // 切换存储时重置已选择集合，避免跨模式残留
             if (selection && typeof selection.clear === 'function') {
@@ -1697,14 +2138,7 @@
             }
 
             // 获取存储类型的中文名称
-            var storageNames = {
-                'local': '本地存储',
-                'cos': '腾讯云COS',
-                'oss': '阿里云OSS',
-                'upyun': '又拍云',
-                'lsky': '兰空图床'
-            };
-            var storageName = storageNames[storageType] || storageType;
+            var storageName = storageRegistry[storageType] && storageRegistry[storageType].label ? storageRegistry[storageType].label : storageType;
 
             // 更新标题显示当前存储类型（只显示存储名称）
             var title = byId('temf-title');
@@ -1743,30 +2177,32 @@
 
             // 延迟执行切换逻辑，让动画效果更平滑
             setTimeout(function () {
-                // 根据存储类型初始化相应的选择器
-                if (storageType === 'local') {
-                    multi.hideDirectorySelectors();
-                    multi.showLocalSelectors();
-                    multi.loadLocalData();
-                } else if (storageType === 'lsky') {
-                    multi.hideLocalSelectors();
-                    multi.initLskySelectors();
-                    multi.loadLskyData();
-                } else {
-                    multi.showDirectorySelectors();
-                    multi.hideLocalSelectors();
-                    multi.initDirectorySelectors();
-
-                    multi.fetch('', function (data) {
-                        var dir = byId('temf-dir');
-                        if (dir) {
-                            cloudStorage.syncDirectorySelector(dir, '', data.folders || []);
-                        }
-                        ui.renderFiles(data.files || [], data.folders || []);
-                        multi.finishSwitchAnimation();
-                    });
-                }
+                multi.handleSwitch(storageType);
             }, 150);
+        },
+
+        handleSwitch: function (storageType) {
+            var handler = storageRegistry[storageType] && storageRegistry[storageType].switchHandler;
+            if (handler) {
+                handler();
+                return;
+            }
+
+            this.showDirectorySelectors();
+            this.hideLocalSelectors();
+            this.initDirectorySelectors();
+            resetCloudRootState(storageType);
+
+            this.fetch('', function (data) {
+                resetCloudRootState(storageType);
+                var dir = byId('temf-dir');
+                if (dir) {
+                    cloudStorage.syncDirectorySelector(dir, '', data.folders || []);
+                    customSelects.setValue('temf-dir', '', { silent: true });
+                }
+                ui.renderFiles(data.files || [], data.folders || [], data);
+                multi.finishSwitchAnimation();
+            });
         },
 
         finishSwitchAnimation: function () {
@@ -1853,7 +2289,7 @@
             // 检查是否配置了兰空图床的相册ID
             // 从可用存储列表中获取兰空图床的配置信息
             var lskyStorage = state.availableStorages.find(function (storage) {
-                return storage.key === 'lsky';
+                return isLskyStorage(storage.key);
             });
 
             return lskyStorage && lskyStorage.hasAlbumId;
@@ -1867,7 +2303,7 @@
             setCurrentPath('');
 
             this.fetch(fetchPath, function (data) {
-                ui.renderFiles(data.files || [], data.folders || []);
+                ui.renderFiles(data.files || [], data.folders || [], data);
                 multi.finishSwitchAnimation();
             }, options);
         },
@@ -1958,25 +2394,32 @@
             var base = sec.getAttribute('data-multi-list');
             if (!base) return;
 
+            var requestOptions = buildCloudPageRequestOptions(state.currentStorage, path, options);
             var url = base;
             var hasQuery = base.indexOf('?') >= 0;
 
             var params = [];
             params.push('storage_type=' + encodeURIComponent(state.currentStorage));
 
-            if (state.currentStorage === 'lsky' && path === 'album') {
+            if (isLskyStorage(state.currentStorage) && path === 'album') {
                 params.push('use_album=1');
             } else if (path) {
                 params.push('temf_path=' + encodeURIComponent(path));
             }
+            if (requestOptions.pageToken) {
+                params.push('temf_page_token=' + encodeURIComponent(requestOptions.pageToken));
+            }
+            if (requestOptions.pageSize) {
+                params.push('temf_page_size=' + encodeURIComponent(String(requestOptions.pageSize)));
+            }
 
             var effectivePath = path || '';
-            if (state.currentStorage === 'lsky') {
+            if (isLskyStorage(state.currentStorage)) {
                 effectivePath = '';
             }
             setCurrentPath(effectivePath);
 
-            var fetchOptions = { bustCache: !!(options && options.bustCache) };
+            var fetchOptions = { bustCache: !!requestOptions.bustCache };
 
             if (fetchOptions.bustCache) {
                 // 强制绕过缓存时生成唯一查询参数
@@ -1987,7 +2430,12 @@
 
             cachedFetch(url, fetchOptions)
                 .then(function (data) {
-                    callback && callback(data);
+                    mergeFoldersOnlyResult(base, path, data, callback, {
+                        storageType: state.currentStorage,
+                        foldersOnly: requestOptions.foldersOnly,
+                        bustCache: requestOptions.bustCache,
+                        extraParams: ['storage_type=' + encodeURIComponent(state.currentStorage)]
+                    });
                 })
                 .catch(function (error) {
                     console.error('[TEMF] 多存储 fetch 失败', error);
@@ -2079,6 +2527,9 @@
                 hint: hint,
                 extension: extension,
                 oldUrl: item.getAttribute('data-url') || '',
+                oldPreviewUrl: (item.querySelector('.temf-thumb img') && item.querySelector('.temf-thumb img').dataset)
+                    ? (item.querySelector('.temf-thumb img').dataset.original || '')
+                    : '',
                 originalName: currentText,
                 objectId: objectId,
                 submitting: false
@@ -2221,8 +2672,9 @@
             }
 
             var source = TEMF_CONF.source;
-            if (source === 'local') {
-                var localRename = sec.getAttribute('data-local-rename');
+            if (isLocalStorage(source)) {
+                var localRenameMeta = getStorageRenameMeta('local');
+                var localRename = localRenameMeta.attr ? sec.getAttribute(localRenameMeta.attr) : '';
                 if (!localRename) {
                     return { supported: false, message: '未配置重命名接口' };
                 }
@@ -2238,8 +2690,9 @@
                 };
             }
 
-            if (source === 'cos' || source === 'oss' || source === 'upyun') {
-                var singleRename = sec.getAttribute('data-' + source + '-rename');
+            var singleRenameMeta = getStorageRenameMeta(source);
+            if (singleRenameMeta.supported) {
+                var singleRename = singleRenameMeta.attr ? sec.getAttribute(singleRenameMeta.attr) : '';
                 if (!singleRename) {
                     return { supported: false, message: '未配置重命名接口' };
                 }
@@ -2259,7 +2712,7 @@
                 };
             }
 
-            if (source === 'multi') {
+            if (isMultiMode()) {
                 var currentStorage = state.currentStorage;
                 if (!currentStorage) {
                     return { supported: false, message: '请先选择存储类型' };
@@ -2268,7 +2721,7 @@
                 if (!multiRename) {
                     return { supported: false, message: '未配置重命名接口' };
                 }
-                if (['local', 'cos', 'oss', 'upyun'].indexOf(currentStorage) === -1) {
+                if (!getStorageRenameMeta(currentStorage).supported) {
                     return { supported: false, message: '当前存储暂不支持重命名' };
                 }
                 return {
@@ -2298,7 +2751,9 @@
             var span = active.span;
             var oldUrl = active.oldUrl;
             var newUrl = result.url || oldUrl;
+            var newPreviewUrl = result.preview_url || result.previewUrl || newUrl;
             var newName = result.name || (active.input.value.trim() + (active.extension || ''));
+            invalidateDirectoryCaches();
             var displayName = newName;
             var lastDot = newName.lastIndexOf('.');
             if (lastDot > 0) {
@@ -2324,16 +2779,16 @@
             var img = item.querySelector('.temf-thumb img');
             if (img) {
                 if (img.dataset) {
-                    img.dataset.original = newUrl;
+                    img.dataset.original = newPreviewUrl;
                     if (img.dataset.thumbnail !== undefined) {
-                        img.dataset.thumbnail = newUrl;
+                        img.dataset.thumbnail = result.thumbnail || newPreviewUrl;
                     }
                     if (img.dataset.src !== undefined) {
-                        img.dataset.src = newUrl;
+                        img.dataset.src = result.thumbnail || newPreviewUrl;
                     }
                 }
-                if (img.src && img.src === oldUrl) {
-                    img.src = newUrl;
+                if (img.src && (img.src === oldUrl || img.src === active.oldPreviewUrl)) {
+                    img.src = result.thumbnail || newPreviewUrl;
                 }
             }
 
@@ -2394,8 +2849,10 @@
             var files = state.pagination.allFiles || [];
             var index = files.findIndex(function (file) { return file.url === oldUrl; });
             if (index !== -1) {
+                invalidateDirectoryCaches();
                 files[index] = Object.assign({}, files[index], {
                     url: newUrl,
+                    preview_url: newPreviewUrl,
                     name: newName,
                     thumbnail: result.thumbnail || files[index].thumbnail,
                     size: files[index].size,
@@ -2404,7 +2861,7 @@
                 });
             }
 
-            if (TEMF_CONF.source === 'local' && TEMF_CONF.data) {
+            if (isLocalStorage(TEMF_CONF.source) && TEMF_CONF.data) {
                 var yearSel = byId('temf-year');
                 var monthSel = byId('temf-month');
                 if (yearSel && monthSel && yearSel.value && monthSel.value) {
@@ -2447,93 +2904,357 @@
         }
     };
 
+    function createUiDataModule() {
+        return {
+            normalizeFiles: function (files) {
+                var list = Array.isArray(files) ? files : [];
+                list = list.map(function (file) {
+                    if (file && typeof file === 'object') {
+                        var resolvedSize = resolveFileSize(file);
+                        if (resolvedSize > 0) {
+                            file.size = resolvedSize;
+                        }
+                    }
+                    return file;
+                });
+
+                var seenKeys = new Set();
+                var uniqueFiles = [];
+                list.forEach(function (file) {
+                    if (!file) return;
+                    var key = file.url ? ('url:' + file.url) : (file.name ? ('name:' + file.name) : null);
+                    if (!key) {
+                        try {
+                            key = JSON.stringify(file);
+                        } catch (e) {
+                            key = String(uniqueFiles.length);
+                        }
+                    }
+                    if (!seenKeys.has(key)) {
+                        seenKeys.add(key);
+                        uniqueFiles.push(file);
+                    }
+                });
+                return uniqueFiles;
+            },
+
+            filterFilesForCurrentPath: function (files) {
+                var activeStorage = isMultiMode()
+                    ? String(state.currentStorage || '').toLowerCase()
+                    : String(TEMF_CONF.source || '').toLowerCase();
+
+                var targetPath = state.currentPath ? normalizeDirectoryPath(state.currentPath).toLowerCase() : '';
+                var shouldFilter = !!targetPath && !isLskyStorage(activeStorage);
+
+                return shouldFilter ? files.filter(function (file) {
+                    var fileDir = extractFileDirectory(file);
+                    var normalizedFileDir = normalizeDirectoryPath(fileDir).toLowerCase();
+                    return normalizedFileDir === targetPath || normalizedFileDir.indexOf(targetPath + '/') === 0;
+                }) : files;
+            },
+
+            normalizeFolders: function (folders, files) {
+                var normalizedFolders = Array.isArray(folders) ? folders.filter(function (folder) {
+                    return folder && (folder.path || folder.name);
+                }).map(function (folder) {
+                    return {
+                        name: folder.name || folder.path || '',
+                        path: normalizeDirectoryPath(folder.path || folder.name || ''),
+                        folderCount: (typeof folder.folderCount === 'number') ? folder.folderCount : null,
+                        fileCount: (typeof folder.fileCount === 'number') ? folder.fileCount : null
+                    };
+                }) : [];
+
+                var currentPath = normalizeDirectoryPath(state.currentPath || '');
+                var source = getEffectiveStorageSource();
+                if (currentPath === '' && isCloudDirectoryStorage(source)) {
+                    var hints = state.rootFolderHints[source] || {};
+                    Object.keys(hints).forEach(function (rootFolder) {
+                        var exists = normalizedFolders.some(function (folder) {
+                            return folder.path === rootFolder;
+                        });
+                        if (!exists) {
+                            normalizedFolders.push({
+                                name: rootFolder,
+                                path: rootFolder,
+                                folderCount: null,
+                                fileCount: null
+                            });
+                        }
+                    });
+
+                }
+
+                normalizedFolders.sort(function (a, b) {
+                    return String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+                });
+
+                return normalizedFolders;
+            },
+
+            getEmptyTip: function () {
+                var source = getEffectiveStorageSource();
+                var currentPath = normalizeDirectoryPath(state.currentPath || '');
+                if (isLocalStorage(source) && isMonthPath(currentPath)) {
+                    return '当前目录无内容（当前为 ' + currentPath + '，上传后将自动创建并展示该月目录）';
+                }
+                return '当前目录无内容';
+            },
+
+            updatePaginationState: function (filteredFiles, meta) {
+                if (meta && meta.server_paged) {
+                    var currentSource = getEffectiveStorageSource();
+                    state.remotePagination.enabled = true;
+                    state.remotePagination.storage = currentSource;
+                    state.remotePagination.path = normalizeDirectoryPath(state.currentPath || '');
+                    state.remotePagination.currentToken = meta.page_token || '';
+                    state.remotePagination.nextToken = meta.next_token || '';
+                    state.remotePagination.hasMore = !!meta.has_more;
+                    state.remotePagination.pageSize = parseInt(meta.page_size, 10) || calculatePageSize();
+                    state.remotePagination.pageNumber = state.remotePagination.history.length + 1;
+
+                    state.pagination.pageSize = Math.max(filteredFiles.length, 1);
+                    state.pagination.allFiles = filteredFiles;
+                    state.pagination.totalItems = filteredFiles.length;
+                    state.pagination.currentPage = 1;
+                    return;
+                }
+
+                state.remotePagination.enabled = false;
+                state.remotePagination.nextToken = '';
+                state.remotePagination.hasMore = false;
+                state.remotePagination.currentToken = '';
+                state.remotePagination.history = [];
+                state.remotePagination.pageNumber = 1;
+                state.remotePagination.path = normalizeDirectoryPath(state.currentPath || '');
+                state.remotePagination.storage = getEffectiveStorageSource();
+                state.pagination.pageSize = calculatePageSize();
+                state.pagination.allFiles = filteredFiles;
+                state.pagination.totalItems = filteredFiles.length;
+                state.pagination.currentPage = 1;
+            },
+
+            getPageFiles: function () {
+                var files = state.pagination.allFiles;
+                var currentPage = state.pagination.currentPage;
+                var pageSize = state.pagination.pageSize;
+                if (!pageSize || pageSize <= 0) {
+                    pageSize = files.length || 1;
+                }
+                if (state.remotePagination.enabled) {
+                    return files.slice();
+                }
+                var startIndex = (currentPage - 1) * pageSize;
+                var endIndex = Math.min(startIndex + pageSize, files.length);
+                return files.slice(startIndex, endIndex);
+            },
+
+            buildFolderItems: function (folders) {
+                var folderItems = folders.slice();
+                var source = getEffectiveStorageSource();
+                var effectivePath = normalizeDirectoryPath(state.currentPath || '');
+                if (isCloudDirectoryStorage(source)) {
+                    var dirSelect = byId('temf-dir');
+                    if (dirSelect) {
+                        effectivePath = normalizeDirectoryPath(dirSelect.value || effectivePath);
+                    }
+                }
+                if (effectivePath !== '') {
+                    folderItems.unshift({
+                        name: '..',
+                        path: getParentPath(effectivePath, source),
+                        isUp: true
+                    });
+                }
+                return folderItems;
+            }
+        };
+    }
+
+    var uiData = createUiDataModule();
+
+    function createUiRenderModule() {
+        return {
+            escapeHtml: function (text) {
+                var div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            },
+
+            renderFolderItem: function (folder, getFolderSubtitle) {
+                var name = folder && folder.name ? String(folder.name) : '/';
+                var path = folder && folder.path ? normalizeDirectoryPath(folder.path) : '';
+                var isUp = !!(folder && folder.isUp);
+                var safePath = this.escapeHtml(path);
+                var displayName = isUp ? '返回上级' : name;
+                var safeName = this.escapeHtml(displayName);
+                var subtitle = isUp ? '' : getFolderSubtitle(folder);
+                var safeSubtitle = this.escapeHtml(subtitle);
+
+                return '<li class="temf-item temf-folder-item" data-temf-folder="1" data-path="' + safePath + '">' +
+                    '<div class="temf-folder-icon" aria-hidden="true"></div>' +
+                    '<span class="temf-folder-name" title="' + safeName + '">' + safeName + '</span>' +
+                    (safeSubtitle ? '<span class="temf-directory" title="' + safeSubtitle + '">' + safeSubtitle + '</span>' : '') +
+                    '</li>';
+            },
+
+            getLoadingGifUrl: function () {
+                if (!this._loadingGifUrl) {
+                    var sec = byId('temediafolder');
+                    if (sec) {
+                        var pluginUrl = sec.getAttribute('data-plugin-url');
+                        if (pluginUrl) {
+                            this._loadingGifUrl = pluginUrl + '/assets/loading.gif';
+                        } else {
+                            var scripts = document.getElementsByTagName('script');
+                            for (var i = 0; i < scripts.length; i++) {
+                                var src = scripts[i].src;
+                                if (src && src.indexOf('temediafolder.js') !== -1) {
+                                    this._loadingGifUrl = src.replace('js/temediafolder.js', 'loading.gif');
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!this._loadingGifUrl) {
+                        this._loadingGifUrl = '../assets/loading.gif';
+                    }
+                }
+                return this._loadingGifUrl;
+            },
+
+            getCachedStorageType: function () {
+                if (!this._cachedStorageType) {
+                    this._cachedStorageType = getEffectiveStorageSource();
+                }
+                return this._cachedStorageType;
+            },
+
+            clearCache: function () {
+                this._cachedStorageType = null;
+            },
+
+            isImageFile: function (fileName) {
+                if (!fileName) return false;
+                if (!this._imageExtensions) {
+                    this._imageExtensions = {
+                        'jpg': true, 'jpeg': true, 'png': true,
+                        'gif': true, 'webp': true, 'bmp': true
+                    };
+                }
+                var lastDot = fileName.lastIndexOf('.');
+                if (lastDot === -1) return false;
+                var extension = fileName.substring(lastDot + 1).toLowerCase();
+                return !!this._imageExtensions[extension];
+            },
+
+            getThumbnailUrl: function (item) {
+                if (item._cachedThumbnail) {
+                    return item._cachedThumbnail;
+                }
+
+                var url = item.preview_url || item.previewUrl || item.url || '';
+                var thumbnail = item.thumbnail;
+                if (thumbnail && thumbnail !== url) {
+                    item._cachedThumbnail = thumbnail;
+                    return thumbnail;
+                }
+
+                var currentSource = this.getCachedStorageType();
+                if (this.isImageFile(item.name || '')) {
+                    var result;
+                    var thumbnailMode = getThumbnailMode(currentSource);
+                    if (thumbnailMode === 'query-thumb' || thumbnailMode === 'bitiful') {
+                        var thumbSize = DEFAULT_THUMB_SIZE;
+                        var thumbParam = thumbnailMode === 'bitiful' ? '' : ('thumbnail=' + thumbSize + 'x' + thumbSize);
+                        if (!thumbParam) {
+                            result = url;
+                        } else if (url.indexOf('?') !== -1) {
+                            result = url + '&' + thumbParam;
+                        } else {
+                            result = url + '?' + thumbParam;
+                        }
+                    } else {
+                        result = url;
+                    }
+                    item._cachedThumbnail = result;
+                    return result;
+                }
+
+                item._cachedThumbnail = url;
+                return url;
+            },
+
+            renderFileItem: function (item) {
+                var url = item.url || '';
+                var previewUrl = item.preview_url || item.previewUrl || url;
+                var thumbnail = this.getThumbnailUrl(item);
+                var name = item.name || 'unknown';
+                var directory = typeof item.directory === 'string' ? item.directory : '';
+
+                var safeUrl = this.escapeHtml(url);
+                var safePreviewUrl = this.escapeHtml(previewUrl);
+                var safeThumbnail = this.escapeHtml(thumbnail);
+                var safeNameFull = this.escapeHtml(name);
+                var normalizedDirectory = directory ? directory.replace(/^\/+|\/+$/g, '') : '';
+                var safeDirectoryValue = this.escapeHtml(normalizedDirectory);
+                var displayName = safeNameFull;
+                var lastDot = name.lastIndexOf('.');
+                if (lastDot > 0) {
+                    displayName = this.escapeHtml(name.slice(0, lastDot));
+                }
+
+                var sizeValue = resolveFileSize(item);
+                var sizeAttr = sizeValue > 0 ? String(sizeValue) : '';
+                var directoryDisplay = formatDirectoryLabel(normalizedDirectory, sizeValue);
+                var safeDirectoryDisplay = this.escapeHtml(directoryDisplay);
+                var safeSizeAttr = this.escapeHtml(sizeAttr);
+                var safeLoader = this.escapeHtml(this.getLoadingGifUrl());
+
+                return '<li class="temf-item" data-url="' + safeUrl + '" data-directory="' + safeDirectoryValue + '" data-size="' + safeSizeAttr + '">' +
+                    '<div class="temf-thumb">' +
+                    '<input type="checkbox" class="temf-pick" value="' + safeUrl + '" data-meta-id="' + (item.id != null ? String(item.id).replace(/"/g, '&quot;') : '') + '">' +
+                    '<img src="' + safeLoader + '" data-src="' + safeThumbnail + '" alt="' + safeNameFull + '" ' +
+                    'class="temf-lazy-img" referrerpolicy="no-referrer" decoding="async" ' +
+                    'data-original="' + safePreviewUrl + '" data-thumbnail="' + safeThumbnail + '" data-loader="' + safeLoader + '" ' +
+                    'onerror="this.src=\'' + safePreviewUrl + '\';this.onerror=null;"/>' +
+                    '</div>' +
+                    '<div class="temf-meta">' +
+                    '<span class="temf-name" data-full-name="' + safeNameFull + '" title="' + displayName + '">' + displayName + '</span>' +
+                    '<span class="temf-directory" data-directory="' + safeDirectoryValue + '" data-size="' + safeSizeAttr + '" title="' + safeDirectoryDisplay + '">' + safeDirectoryDisplay + '</span>' +
+                    '<div class="temf-actions">' +
+                    '<button type="button" class="btn btn-xs temf-action-btn" data-temf-insert data-url="' + safeUrl + '">插入</button>' +
+                    '<button type="button" class="btn btn-xs temf-action-btn" data-temf-copy data-url="' + safeUrl + '">复制</button>' +
+                    '</div>' +
+                    '</div>' +
+                    '</li>';
+            }
+        };
+    }
+
+    var uiRender = createUiRenderModule();
+
     var ui = {
-        renderFiles: function (files, folders) {
+        renderFiles: function (files, folders, meta) {
             var body = document.querySelector('#temf-modal .temf-body');
             if (!body) {
                 return;
             }
 
-            var list = Array.isArray(files) ? files : [];
-            list = list.map(function (file) {
-                if (file && typeof file === 'object') {
-                    var resolvedSize = resolveFileSize(file);
-                    if (resolvedSize > 0) {
-                        file.size = resolvedSize;
-                    }
-                }
-                return file;
-            });
-            var seenKeys = new Set();
-            var uniqueFiles = [];
+            meta = meta || {};
 
-            list.forEach(function (file) {
-                if (!file) return;
-                var key = file.url ? ('url:' + file.url) : (file.name ? ('name:' + file.name) : null);
-                if (!key) {
-                    try {
-                        key = JSON.stringify(file);
-                    } catch (e) {
-                        key = String(uniqueFiles.length);
-                    }
-                }
-                if (!seenKeys.has(key)) {
-                    seenKeys.add(key);
-                    uniqueFiles.push(file);
-                }
-            });
-
-            var activeStorage = TEMF_CONF.source === 'multi'
-                ? String(state.currentStorage || '').toLowerCase()
-                : String(TEMF_CONF.source || '').toLowerCase();
-
-            var targetPath = state.currentPath ? normalizeDirectoryPath(state.currentPath).toLowerCase() : '';
-            var shouldFilter = !!targetPath && activeStorage !== 'lsky';
-
-            var filteredFiles = shouldFilter ? uniqueFiles.filter(function (file) {
-                var fileDir = extractFileDirectory(file);
-                var normalizedFileDir = normalizeDirectoryPath(fileDir).toLowerCase();
-                // 使用前缀匹配而不是精确匹配，以包含子目录的文件
-                // 例如：选择 2023/01 时，会显示 2023/01 和 2023/01/2 的文件
-                return normalizedFileDir === targetPath || normalizedFileDir.indexOf(targetPath + '/') === 0;
-            }) : uniqueFiles;
-
-            state.currentFolders = Array.isArray(folders) ? folders.filter(function (folder) {
-                return folder && (folder.path || folder.name);
-            }).map(function (folder) {
-                return {
-                    name: folder.name || folder.path || '',
-                    path: normalizeDirectoryPath(folder.path || folder.name || ''),
-                    folderCount: (typeof folder.folderCount === 'number') ? folder.folderCount : null,
-                    fileCount: (typeof folder.fileCount === 'number') ? folder.fileCount : null
-                };
-            }) : [];
+            var uniqueFiles = uiData.normalizeFiles(files);
+            var filteredFiles = uiData.filterFilesForCurrentPath(uniqueFiles);
+            state.currentFolders = uiData.normalizeFolders(folders, filteredFiles);
 
             if (filteredFiles.length === 0 && state.currentFolders.length === 0) {
-                var source = getEffectiveStorageSource();
-                var currentPath = normalizeDirectoryPath(state.currentPath || '');
-                var emptyTip = '当前目录无内容';
-                if (source === 'local' && isMonthPath(currentPath)) {
-                    emptyTip = '当前目录无内容（当前为 ' + currentPath + '，上传后将自动创建并展示该月目录）';
-                }
-
-                body.innerHTML = '<p class="description">' + emptyTip + '</p>';
+                body.innerHTML = '<p class="description">' + uiData.getEmptyTip() + '</p>';
                 selection.clear();
                 pagination.hide();
                 return;
             }
 
-            // 动态计算每页显示数量（确保在容器存在后计算）
-            state.pagination.pageSize = calculatePageSize();
-
-            // 保存所有文件到状态
-            state.pagination.allFiles = filteredFiles;
-            state.pagination.totalItems = filteredFiles.length;
-
-            // 重置到第一页
-            state.pagination.currentPage = 1;
-
-            // 渲染当前页
+            uiData.updatePaginationState(filteredFiles, meta);
             this.renderCurrentPage();
         },
 
@@ -2543,96 +3264,86 @@
 
             var files = state.pagination.allFiles;
             var folders = state.currentFolders || [];
-            var currentPage = state.pagination.currentPage;
-            var pageSize = state.pagination.pageSize;
-
             if ((!files || !files.length) && folders.length === 0) return;
-
-            if (!pageSize || pageSize <= 0) {
-                pageSize = files.length || 1;
-            }
-
-            // 计算当前页的文件范围
-            var startIndex = (currentPage - 1) * pageSize;
-            var endIndex = Math.min(startIndex + pageSize, files.length);
-            var pageFiles = files.slice(startIndex, endIndex);
+            var pageFiles = uiData.getPageFiles();
 
             // 清空并创建网格
             if (rename && typeof rename.cancel === 'function') {
                 rename.cancel(true);
             }
             var fragment = document.createDocumentFragment();
-            var grid = document.createElement('ul');
-            grid.className = 'temf-grid';
-            fragment.appendChild(grid);
             body.innerHTML = '';
-            body.appendChild(fragment);
 
-            var folderItems = folders.slice();
-            var canGoUp = state.currentPath && normalizeDirectoryPath(state.currentPath) !== '';
-            if (canGoUp) {
-                var source = getEffectiveStorageSource();
-                var upPath = getParentPath(state.currentPath, source);
-                folderItems.unshift({
-                    name: '..',
-                    path: upPath,
-                    isUp: true
-                });
+            var folderItems = uiData.buildFolderItems(folders);
+
+            var folderGrid = null;
+            if (folderItems.length) {
+                folderGrid = document.createElement('ul');
+                folderGrid.className = 'temf-grid temf-folder-grid';
+                fragment.appendChild(folderGrid);
             }
 
+            var grid = document.createElement('ul');
+            grid.className = 'temf-grid temf-file-grid';
+            fragment.appendChild(grid);
+            body.appendChild(fragment);
+
             for (var f = 0; f < folderItems.length; f++) {
-                grid.insertAdjacentHTML('beforeend', this.renderFolderItem(folderItems[f]));
+                folderGrid.insertAdjacentHTML('beforeend', uiRender.renderFolderItem(folderItems[f], this.getFolderSubtitle.bind(this)));
                 this.requestFolderStats(folderItems[f]);
             }
 
-            // 渲染当前页的文件
-            var self = this;
-            var htmlParts = [];
-            for (var i = 0; i < pageFiles.length; i++) {
-                htmlParts.push(self.renderFileItem(pageFiles[i]));
-            }
-
-            if (htmlParts.length) {
-                var div = document.createElement('div');
-                div.innerHTML = htmlParts.join('');
-                while (div.firstChild) {
-                    grid.appendChild(div.firstChild);
-                }
-            }
+            this.appendFileItemsInBatches(grid, pageFiles, 24);
 
             selection.clear();
             requestAnimationFrame(function () {
                 grid.classList.add('temf-grid-loaded');
-                // 初始化懒加载
-                initLazyLoading();
+                if (!pageFiles.length) {
+                    scheduleInitLazyLoading();
+                }
             });
+
+            if (upload && upload.stagedFiles && upload.stagedFiles.length) {
+                upload.stagePanel.render();
+                upload.stagePanel.show();
+            }
 
             // 更新分页控件
             pagination.update();
         },
 
-        renderFolderItem: function (folder) {
-            var name = folder && folder.name ? String(folder.name) : '/';
-            var path = folder && folder.path ? normalizeDirectoryPath(folder.path) : '';
-            var isUp = !!(folder && folder.isUp);
-
-            function escapeHtml(text) {
-                var div = document.createElement('div');
-                div.textContent = text;
-                return div.innerHTML;
+        appendFileItemsInBatches: function (grid, pageFiles, batchSize) {
+            if (!grid || !pageFiles || !pageFiles.length) {
+                return;
             }
 
-            var safePath = escapeHtml(path);
-            var displayName = isUp ? '返回上级' : name;
-            var safeName = escapeHtml(displayName);
-            var subtitle = isUp ? '' : this.getFolderSubtitle(folder);
-            var safeSubtitle = escapeHtml(subtitle);
+            var index = 0;
+            var size = Math.max(1, batchSize || 24);
 
-            return '<li class="temf-item temf-folder-item" data-temf-folder="1" data-path="' + safePath + '">' +
-                '<div class="temf-folder-icon" aria-hidden="true"></div>' +
-                '<span class="temf-folder-name" title="' + safeName + '">' + safeName + '</span>' +
-                (safeSubtitle ? '<span class="temf-directory" title="' + safeSubtitle + '">' + safeSubtitle + '</span>' : '') +
-                '</li>';
+            function appendBatch() {
+                var end = Math.min(index + size, pageFiles.length);
+                var htmlParts = [];
+                for (var i = index; i < end; i++) {
+                    htmlParts.push(uiRender.renderFileItem(pageFiles[i]));
+                }
+
+                if (htmlParts.length) {
+                    var div = document.createElement('div');
+                    div.innerHTML = htmlParts.join('');
+                    while (div.firstChild) {
+                        grid.appendChild(div.firstChild);
+                    }
+                }
+
+                index = end;
+                if (index < pageFiles.length) {
+                    requestAnimationFrame(appendBatch);
+                } else {
+                    scheduleInitLazyLoading();
+                }
+            }
+
+            appendBatch();
         },
 
         getFolderSubtitle: function (folder) {
@@ -2640,6 +3351,10 @@
             var fileCount = folder && typeof folder.fileCount === 'number' ? folder.fileCount : null;
             var source = getEffectiveStorageSource();
             var key = source + ':' + normalizeDirectoryPath(folder && folder.path ? folder.path : '');
+
+            if (isServerPagedStorage(source)) {
+                return '';
+            }
 
             if ((folderCount === null || fileCount === null) && state.folderStatsCache[key] && !state.folderStatsCache[key].loading) {
                 folderCount = state.folderStatsCache[key].folderCount;
@@ -2664,7 +3379,7 @@
                 return;
             }
 
-            if (!(source === 'cos' || source === 'oss' || source === 'upyun')) {
+            if (!isServerPagedStorage(source)) {
                 return;
             }
 
@@ -2674,186 +3389,24 @@
             }
 
             state.folderStatsCache[key] = { loading: true };
-            var fetchFn = TEMF_CONF.source === 'multi'
+            if (folderStatsTimer) {
+                clearTimeout(folderStatsTimer);
+            }
+            var fetchFn = isMultiMode()
                 ? multi.fetch
                 : function (path, callback, options) { cloudStorage.fetch(source, path, callback, options); };
 
-            fetchFn(folderPath, function (data) {
-                state.folderStatsCache[key] = {
-                    loading: false,
-                    folderCount: Array.isArray(data && data.folders) ? data.folders.length : 0,
-                    fileCount: Array.isArray(data && data.files) ? data.files.length : 0
-                };
-                ui.renderCurrentPage();
-            });
-        },
-
-        renderFileItem: function (item) {
-            var url = item.url || '';
-            var thumbnail = this.getThumbnailUrl(item); // 智能获取缩略图URL
-            var name = item.name || 'unknown';
-            var directory = typeof item.directory === 'string' ? item.directory : '';
-
-            function escapeHtml(text) {
-                var div = document.createElement('div');
-                div.textContent = text;
-                return div.innerHTML;
-            }
-
-            var safeUrl = escapeHtml(url);
-            var safeThumbnail = escapeHtml(thumbnail);
-            var safeNameFull = escapeHtml(name);
-            var normalizedDirectory = directory ? directory.replace(/^\/+/g, '').replace(/\/+$/g, '') : '';
-            var safeDirectoryValue = escapeHtml(normalizedDirectory);
-            var displayName = safeNameFull;
-            var lastDot = name.lastIndexOf('.');
-            if (lastDot > 0) {
-                displayName = escapeHtml(name.slice(0, lastDot));
-            }
-
-            var sizeValue = resolveFileSize(item);
-            var sizeAttr = sizeValue > 0 ? String(sizeValue) : '';
-            var directoryDisplay = formatDirectoryLabel(normalizedDirectory, sizeValue);
-            var safeDirectoryDisplay = escapeHtml(directoryDisplay);
-            var safeSizeAttr = escapeHtml(sizeAttr);
-
-            // 获取 loading.gif 路径
-            var loadingGif = this.getLoadingGifUrl();
-            var safeLoader = escapeHtml(loadingGif);
-
-            // 优化图片加载：使用loading.gif作为占位图，通过Intersection Observer进行懒加载
-            return '<li class="temf-item" data-url="' + safeUrl + '" data-directory="' + safeDirectoryValue + '" data-size="' + safeSizeAttr + '">' +
-                '<div class="temf-thumb">' +
-                '<input type="checkbox" class="temf-pick" value="' + safeUrl + '" data-meta-id="' + (item.id != null ? String(item.id).replace(/"/g, '&quot;') : '') + '">' +
-                '<img src="' + safeLoader + '" data-src="' + safeThumbnail + '" alt="' + safeNameFull + '" ' +
-                'class="temf-lazy-img" referrerpolicy="no-referrer" decoding="async" ' +
-                'data-original="' + safeUrl + '" data-thumbnail="' + safeThumbnail + '" data-loader="' + safeLoader + '" ' +
-                'onerror="this.src=\'' + safeUrl + '\';this.onerror=null;"/>' +
-                '</div>' +
-                '<div class="temf-meta">' +
-                '<span class="temf-name" data-full-name="' + safeNameFull + '" title="' + displayName + '">' + displayName + '</span>' +
-                '<span class="temf-directory" data-directory="' + safeDirectoryValue + '" data-size="' + safeSizeAttr + '" title="' + safeDirectoryDisplay + '">' + safeDirectoryDisplay + '</span>' +
-                '<div class="temf-actions">' +
-                '<button type="button" class="btn btn-xs temf-action-btn" data-temf-insert data-url="' + safeUrl + '">插入</button>' +
-                '<button type="button" class="btn btn-xs temf-action-btn" data-temf-copy data-url="' + safeUrl + '">复制</button>' +
-                '</div>' +
-                '</div>' +
-                '</li>';
-        },
-
-        /**
-         * 获取 loading.gif 的 URL
-         */
-        getLoadingGifUrl: function () {
-            // 缓存 loading.gif URL
-            if (!this._loadingGifUrl) {
-                var sec = byId('temediafolder');
-                if (sec) {
-                    // 从插件路径获取
-                    var pluginUrl = sec.getAttribute('data-plugin-url');
-                    if (pluginUrl) {
-                        this._loadingGifUrl = pluginUrl + '/assets/loading.gif';
-                    } else {
-                        // 降级：尝试从当前脚本路径推断
-                        var scripts = document.getElementsByTagName('script');
-                        for (var i = 0; i < scripts.length; i++) {
-                            var src = scripts[i].src;
-                            if (src && src.indexOf('temediafolder.js') !== -1) {
-                                this._loadingGifUrl = src.replace('js/temediafolder.js', 'loading.gif');
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // 如果还是没找到，使用相对路径
-                if (!this._loadingGifUrl) {
-                    this._loadingGifUrl = '../assets/loading.gif';
-                }
-            }
-            return this._loadingGifUrl;
-        },
-
-        getThumbnailUrl: function (item) {
-            // 性能优化：缓存结果避免重复计算
-            if (item._cachedThumbnail) {
-                return item._cachedThumbnail;
-            }
-
-            var url = item.url || '';
-            var thumbnail = item.thumbnail;
-
-            // 如果已经有缩略图URL，直接使用
-            if (thumbnail && thumbnail !== url) {
-                item._cachedThumbnail = thumbnail;
-                return thumbnail;
-            }
-
-            // 性能优化：缓存存储类型判断
-            var currentSource = this._getCachedStorageType();
-
-            // 检查是否为图片文件
-            if (this.isImageFile(item.name || '')) {
-                var result;
-                // 只有云存储服务（COS/OSS/兰空图床）才使用URL参数生成缩略图
-                if (currentSource === 'cos' || currentSource === 'oss' || currentSource === 'lsky') {
-                    // 获取配置的缩略图尺寸
-                    var thumbSize = TEMF_CONF.thumbSize || 120;
-                    var thumbParam = 'thumbnail=' + thumbSize + 'x' + thumbSize;
-
-                    if (url.indexOf('?') !== -1) {
-                        result = url + '&' + thumbParam;
-                    } else {
-                        result = url + '?' + thumbParam;
-                    }
-                } else {
-                    // 本地存储如果没有缩略图就使用原图
-                    result = url;
-                }
-
-                item._cachedThumbnail = result;
-                return result;
-            }
-
-            // 非图片文件返回原URL
-            item._cachedThumbnail = url;
-            return url;
-        },
-
-        // 性能优化：缓存存储类型判断结果
-        _getCachedStorageType: function () {
-            if (!this._cachedStorageType) {
-                var currentSource = TEMF_CONF.source;
-                if (currentSource === 'multi' && state.currentStorage) {
-                    currentSource = state.currentStorage;
-                }
-                this._cachedStorageType = currentSource;
-            }
-            return this._cachedStorageType;
-        },
-
-        // 清除缓存（在模式切换时调用）
-        _clearCache: function () {
-            this._cachedStorageType = null;
-        },
-
-        isImageFile: function (fileName) {
-            // 性能优化：缓存扩展名检查
-            if (!fileName) return false;
-
-            // 性能优化：使用静态哈希表而不是数组查找
-            if (!this._imageExtensions) {
-                this._imageExtensions = {
-                    'jpg': true, 'jpeg': true, 'png': true,
-                    'gif': true, 'webp': true, 'bmp': true
-                };
-            }
-
-            var lastDot = fileName.lastIndexOf('.');
-            if (lastDot === -1) return false;
-
-            var extension = fileName.substring(lastDot + 1).toLowerCase();
-            return !!this._imageExtensions[extension];
+            folderStatsTimer = setTimeout(function () {
+                folderStatsTimer = null;
+                fetchFn(folderPath, function (data) {
+                    state.folderStatsCache[key] = {
+                        loading: false,
+                        folderCount: Array.isArray(data && data.folders) ? data.folders.length : 0,
+                        fileCount: Array.isArray(data && data.files) ? data.files.length : 0
+                    };
+                    ui.renderCurrentPage();
+                });
+            }, 120);
         },
 
         prependFile: function (fileItem) {
@@ -2984,7 +3537,7 @@
 
         upload: function () {
             // 多模式下必须先选择目标存储
-            if (TEMF_CONF && TEMF_CONF.source === 'multi') {
+            if (TEMF_CONF && isMultiMode()) {
                 if (!state.currentStorage) {
                     console.warn('[TEMF] 多模式下未选择存储类型');
                     alert('请先选择存储类型');
@@ -3008,7 +3561,7 @@
 
             fileInput.addEventListener('change', function () {
                 if (this.files && this.files.length > 0) {
-                    upload.handleMultipleFiles(Array.from(this.files));
+                    upload.stageFiles(Array.from(this.files));
                 } else {
                     console.warn('[TEMF] 未选择文件');
                 }
@@ -3018,12 +3571,377 @@
         }
     };
 
-    var upload = {
+    function createUploadStagePanelModule(uploadApi) {
+        return {
+            getCurrentTargetLabel: function () {
+                var path = normalizeDirectoryPath(uploadApi.getCurrentPath());
+                var storage = uploadApi.getCurrentStorageType();
+                var storageName = storageRegistry[storage] && storageRegistry[storage].label ? storageRegistry[storage].label : storage;
+                return storageName + ' / 将上传到 ' + getComputedUploadPath(storage, path);
+            },
+
+            show: function () {
+                var panel = document.querySelector('#temf-modal .temf-upload-panel');
+                if (panel) panel.classList.add('show');
+                var dialog = document.querySelector('#temf-modal .temf-dialog');
+                if (dialog) dialog.classList.add('temf-upload-staging');
+            },
+
+            hide: function () {
+                var panel = document.querySelector('#temf-modal .temf-upload-panel');
+                if (panel) panel.classList.remove('show');
+                var dialog = document.querySelector('#temf-modal .temf-dialog');
+                if (dialog) dialog.classList.remove('temf-upload-staging');
+            },
+
+            render: function () {
+                var dialog = document.querySelector('#temf-modal .temf-dialog');
+                if (!dialog) return;
+
+                var panel = dialog.querySelector('.temf-upload-panel');
+                if (!panel) {
+                    panel = document.createElement('div');
+                    panel.className = 'temf-upload-panel';
+                    panel.innerHTML = '' +
+                        '<div class="temf-upload-panel-header">' +
+                            '<div>' +
+                                '<div class="temf-upload-panel-title">待上传文件</div>' +
+                                '<div class="temf-upload-panel-subtitle"></div>' +
+                            '</div>' +
+                            '<div class="temf-upload-panel-actions">' +
+                                '<button type="button" class="btn btn-xs" data-temf-stage-pick>继续选择</button>' +
+                                '<button type="button" class="btn btn-xs" data-temf-stage-clear>清空列表</button>' +
+                                '<button type="button" class="temf-upload-panel-close" data-temf-stage-cancel aria-label="取消上传">&times;</button>' +
+                            '</div>' +
+                        '</div>' +
+                        '<div class="temf-upload-list"></div>' +
+                        '<div class="temf-upload-panel-footer">' +
+                            '<span class="temf-upload-panel-subtitle" data-temf-stage-count></span>' +
+                            '<button type="button" class="btn primary" data-temf-stage-start>开始上传</button>' +
+                        '</div>';
+                    dialog.appendChild(panel);
+                }
+
+                var subtitle = panel.querySelector('.temf-upload-panel-subtitle');
+                if (subtitle) subtitle.textContent = '上传到 ' + this.getCurrentTargetLabel();
+
+                var count = panel.querySelector('[data-temf-stage-count]');
+                if (count) count.textContent = '共 ' + uploadApi.stagedFiles.length + ' 个文件';
+
+                var list = panel.querySelector('.temf-upload-list');
+                if (!list) return;
+                list.innerHTML = '';
+
+                if (!uploadApi.stagedFiles.length) {
+                    var empty = document.createElement('div');
+                    empty.className = 'temf-upload-panel-empty';
+                    empty.textContent = '拖拽图片到素材库，或点击继续选择';
+                    list.appendChild(empty);
+                } else {
+                    for (var i = 0; i < uploadApi.stagedFiles.length; i++) {
+                        var staged = uploadApi.stagedFiles[i];
+                        var file = staged.file;
+                        var item = document.createElement('div');
+                        item.className = 'temf-upload-item';
+                        item.innerHTML = '' +
+                            '<span class="temf-upload-thumb">' + (staged.previewUrl ? ('<img src="' + uploadApi.escapeHtml(staged.previewUrl) + '" alt="">') : '') + '</span>' +
+                            '<span class="temf-upload-name" title="' + uploadApi.escapeHtml(file.name) + '">' + uploadApi.escapeHtml(file.name) + '</span>' +
+                            '<span class="temf-upload-meta">' + uploadApi.formatBytes(file.size || 0) + '</span>' +
+                            '<span class="temf-upload-status">等待上传</span>' +
+                            '<button type="button" class="temf-upload-remove" data-temf-stage-remove="' + i + '">取消</button>';
+                        list.appendChild(item);
+                    }
+                }
+
+                var startBtn = panel.querySelector('[data-temf-stage-start]');
+                if (startBtn) startBtn.disabled = !uploadApi.stagedFiles.length;
+            }
+        };
+    }
+
+    function createUploadModule() {
+        return {
+        stagePanel: null,
+        stagedFiles: [],
         queue: [],
         currentIndex: 0,
         totalFiles: 0,
         currentXhr: null,
         isCancelled: false,
+
+        stageFiles: function (files) {
+            if (!files || !files.length) {
+                return;
+            }
+
+            var validFiles = files.filter(function (file) {
+                return !!(file && file.type && file.type.indexOf('image/') === 0);
+            });
+
+            if (!validFiles.length) {
+                try { alert('仅支持图片文件'); } catch (e) {}
+                return;
+            }
+
+            for (var i = 0; i < validFiles.length; i++) {
+                var file = validFiles[i];
+                this.stagedFiles.push({
+                    file: file,
+                    previewUrl: this.createPreviewUrl(file)
+                });
+            }
+            this.stagePanel.render();
+            this.stagePanel.show();
+        },
+
+        clearStagedFiles: function () {
+            this.releaseStagePreviewUrls();
+            this.stagedFiles = [];
+            this.stagePanel.render();
+            this.stagePanel.hide();
+        },
+
+        cancelStagePanel: function () {
+            this.clearStagedFiles();
+        },
+
+        removeStagedFile: function (index) {
+            if (index < 0 || index >= this.stagedFiles.length) return;
+            this.revokePreviewUrl(this.stagedFiles[index]);
+            this.stagedFiles.splice(index, 1);
+            this.stagePanel.render();
+            if (!this.stagedFiles.length) {
+                this.stagePanel.hide();
+            }
+        },
+
+        startStagedUpload: function () {
+            if (!this.stagedFiles.length) return;
+            if (!this.validateMultiModeState()) {
+                try { alert('请先选择可用的存储类型'); } catch (e) {}
+                return;
+            }
+            var files = this.stagedFiles.map(function (item) { return item.file; });
+            this.releaseStagePreviewUrls();
+            this.stagedFiles = [];
+            this.stagePanel.render();
+            this.stagePanel.hide();
+            this.handleMultipleFiles(files);
+        },
+
+        createPreviewUrl: function (file) {
+            if (!file || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+                return '';
+            }
+            try {
+                return URL.createObjectURL(file);
+            } catch (e) {
+                return '';
+            }
+        },
+
+        revokePreviewUrl: function (item) {
+            if (!item || !item.previewUrl || typeof URL === 'undefined' || typeof URL.revokeObjectURL !== 'function') {
+                return;
+            }
+            try {
+                URL.revokeObjectURL(item.previewUrl);
+            } catch (e) {}
+            item.previewUrl = '';
+        },
+
+        releaseStagePreviewUrls: function () {
+            for (var i = 0; i < this.stagedFiles.length; i++) {
+                this.revokePreviewUrl(this.stagedFiles[i]);
+            }
+        },
+
+        escapeHtml: function (text) {
+            var div = document.createElement('div');
+            div.textContent = String(text || '');
+            return div.innerHTML;
+        },
+
+        formatBytes: function (bytes) {
+            bytes = Number(bytes || 0);
+            if (bytes <= 0) return '0 B';
+            var units = ['B', 'KB', 'MB', 'GB'];
+            var i = 0;
+            while (bytes >= 1024 && i < units.length - 1) {
+                bytes /= 1024;
+                i++;
+            }
+            return (i === 0 ? Math.round(bytes) : bytes.toFixed(1)) + ' ' + units[i];
+        },
+
+        dispatchUploadBySource: function (file, currentSource, isBatch) {
+            if (isMultiMode()) {
+                this.uploadToCloudStorage(file, isBatch, 'multi');
+                return;
+            }
+
+            if (getStorageUploadAttr(currentSource)) {
+                this.uploadToCloudStorage(file, isBatch, currentSource);
+            } else if (isLskyStorage(currentSource)) {
+                this.uploadToLsky(file, isBatch);
+            } else {
+                this.uploadLocal(file, isBatch);
+            }
+        },
+
+        sendUploadRequest: function (uploadUrl, formData, file, isBatch, handlers) {
+            var self = this;
+            var xhr = new XMLHttpRequest();
+            xhr.timeout = 120000;
+
+            xhr.upload.addEventListener('progress', function (e) {
+                if (e.lengthComputable) {
+                    var percent = (e.loaded / e.total) * 100;
+                    progress.updateFileProgress(percent);
+                }
+            });
+
+            xhr.addEventListener('load', function () {
+                if (handlers && typeof handlers.load === 'function') {
+                    handlers.load(xhr);
+                }
+            });
+
+            xhr.addEventListener('error', function () {
+                if (handlers && typeof handlers.error === 'function') {
+                    handlers.error(xhr);
+                } else {
+                    self.handleUploadError('网络错误', file, isBatch);
+                }
+            });
+
+            xhr.addEventListener('timeout', function () {
+                if (handlers && typeof handlers.timeout === 'function') {
+                    handlers.timeout(xhr);
+                } else {
+                    self.handleUploadError('上传超时', file, isBatch);
+                }
+            });
+
+            xhr.open('POST', uploadUrl);
+            xhr.send(formData);
+            return xhr;
+        },
+
+        handleLskyUploadResponse: function (xhr, file, isBatch) {
+            var text = (xhr && typeof xhr.responseText === 'string') ? xhr.responseText : '';
+            var result = null;
+            var success = false;
+            if (text && text.trim().charAt(0) === '{') {
+                try {
+                    result = JSON.parse(text);
+                    success = !!(result && result.ok && result.url);
+                } catch (e) {
+                    result = { ok: false, msg: '解析响应失败' };
+                }
+            } else {
+                result = { ok: false, msg: (text ? '非JSON响应' : '空响应') };
+            }
+
+            if (success) {
+                progress.updateFileProgress(100);
+                ui.prependFile({
+                    name: result.name || file.name,
+                    url: result.url,
+                    id: result.id || result.key || '',
+                    thumbnail: result.thumbnail,
+                    size: result.size || 0
+                });
+            } else {
+                var msg = (result && (result.msg || result.message)) ? (result.msg || result.message) : '上传失败';
+                progress.setError && progress.setError(msg);
+                progress.hide();
+            }
+
+            if (isBatch) {
+                this.onUploadComplete(success, file.name);
+            }
+        },
+
+        handleLskyUploadFailure: function (message, file, isBatch) {
+            progress.setError && progress.setError(message);
+            progress.hide();
+            if (isBatch) {
+                this.onUploadComplete(false, file.name);
+            }
+        },
+
+        resolveLocalUploadTarget: function (result) {
+            var year = result.year;
+            var month = result.month;
+
+            if (!year || !month) {
+                var ySel = byId('temf-year');
+                var mSel = byId('temf-month');
+                if (ySel && ySel.value && mSel && mSel.value) {
+                    year = ySel.value;
+                    var monthValue = mSel.value;
+                    month = monthValue.length === 1 ? '0' + monthValue : monthValue;
+                } else {
+                    var nowYM = getNowYearMonth();
+                    year = nowYM.year;
+                    month = nowYM.month;
+                }
+            }
+
+            return { year: year, month: month };
+        },
+
+        handleLocalUploadSuccess: function (result) {
+            invalidateDirectoryCaches();
+            progress.updateFileProgress(100);
+
+            var target = this.resolveLocalUploadTarget(result);
+            var year = target.year;
+            var month = target.month;
+
+            TEMF_CONF.data = TEMF_CONF.data || {};
+            TEMF_CONF.data[year] = TEMF_CONF.data[year] || {};
+            TEMF_CONF.data[year][month] = TEMF_CONF.data[year][month] || [];
+
+            var newItem = {
+                url: result.url,
+                name: result.name,
+                mtime: Math.floor(Date.now() / 1000),
+                size: resolveFileSize(result) || 0,
+                size_human: result.size_human || formatFileSize(resolveFileSize(result) || 0)
+            };
+
+            var list = TEMF_CONF.data[year][month];
+            list = [newItem].concat(list.filter(function (item) {
+                return item.url !== result.url;
+            }));
+            TEMF_CONF.data[year][month] = list;
+
+            var modalEl = document.getElementById('temf-modal');
+            if (modalEl && modalEl.classList.contains('open') && isLocalStorage(getEffectiveStorageSource())) {
+                var targetMonthPath = year + '/' + month;
+                var normalizedCurrent = normalizeDirectoryPath(state.currentPath || '');
+                if (normalizedCurrent === targetMonthPath || normalizedCurrent.indexOf(targetMonthPath + '/') === 0) {
+                    ui.prependFile(newItem);
+                } else {
+                    localBrowser.navigate(targetMonthPath);
+                }
+            }
+
+            return true;
+        },
+
+        handleLocalUploadFailure: function (message, file, isBatch) {
+            if (!isBatch) {
+                alert('上传失败: ' + message);
+            } else if (progress.setError) {
+                progress.setError(message);
+            }
+            if (isBatch) {
+                this.onUploadComplete(false, file.name);
+            }
+        },
 
         handleFile: function (file) {
             if (!this.validateMultiModeState()) {
@@ -3032,40 +3950,7 @@
             }
 
             var currentSource = this.getCurrentStorageType();
-
-            if (currentSource === 'multi') {
-                this.uploadToMulti(file, false);
-            } else if (currentSource === 'cos') {
-                if (TEMF_CONF.source === 'multi') {
-                    this.uploadToMulti(file, false);
-                } else {
-                    this.uploadToCos(file, false);
-                }
-            } else if (currentSource === 'oss') {
-                if (TEMF_CONF.source === 'multi') {
-                    this.uploadToMulti(file, false);
-                } else {
-                    this.uploadToOss(file, false);
-                }
-            } else if (currentSource === 'upyun') {
-                if (TEMF_CONF.source === 'multi') {
-                    this.uploadToMulti(file, false);
-                } else {
-                    this.uploadToUpyun(file, false);
-                }
-            } else if (currentSource === 'lsky') {
-                if (TEMF_CONF.source === 'multi') {
-                    this.uploadToMulti(file, false);
-                } else {
-                    this.uploadToLsky(file, false);
-                }
-            } else {
-                if (TEMF_CONF.source === 'multi') {
-                    this.uploadToMulti(file, false);
-                } else {
-                    this.uploadLocal(file, false);
-                }
-            }
+            this.dispatchUploadBySource(file, currentSource, false);
         },
 
         handleMultipleFiles: function (files) {
@@ -3134,52 +4019,13 @@
 
             progress.update(this.currentIndex, this.totalFiles, file.name);
 
-            // 优化多模式下的上传逻辑：根据当前激活的存储类型选择上传方法
             var currentSource = this.getCurrentStorageType();
-
-            if (currentSource === 'multi') {
-                this.uploadToMulti(file, true);
-            } else if (currentSource === 'cos') {
-                // 多模式下切换到COS时，使用多模式上传接口
-                if (TEMF_CONF.source === 'multi') {
-                    this.uploadToMulti(file, true);
-                } else {
-                    this.uploadToCos(file, true);
-                }
-            } else if (currentSource === 'oss') {
-                // 多模式下切换到OSS时，使用多模式上传接口
-                if (TEMF_CONF.source === 'multi') {
-                    this.uploadToMulti(file, true);
-                } else {
-                    this.uploadToOss(file, true);
-                }
-            } else if (currentSource === 'upyun') {
-                // 多模式下切换到又拍云时，使用多模式上传接口
-                if (TEMF_CONF.source === 'multi') {
-                    this.uploadToMulti(file, true);
-                } else {
-                    this.uploadToUpyun(file, true);
-                }
-            } else if (currentSource === 'lsky') {
-                // 多模式下切换到兰空图床时，使用多模式上传接口
-                if (TEMF_CONF.source === 'multi') {
-                    this.uploadToMulti(file, true);
-                } else {
-                    this.uploadToLsky(file, true);
-                }
-            } else {
-                // 本地存储或默认情况
-                if (TEMF_CONF.source === 'multi') {
-                    this.uploadToMulti(file, true);
-                } else {
-                    this.uploadLocal(file, true);
-                }
-            }
+            this.dispatchUploadBySource(file, currentSource, true);
         },
 
         getCurrentStorageType: function () {
             // 多模式下返回当前选中的存储类型，单模式下返回配置的存储类型
-            if (TEMF_CONF.source === 'multi' && state.currentStorage) {
+            if (isMultiMode() && state.currentStorage) {
                 return state.currentStorage;
             }
             return TEMF_CONF.source;
@@ -3187,7 +4033,7 @@
 
         validateMultiModeState: function () {
             // 验证多模式状态是否有效
-            if (TEMF_CONF.source === 'multi') {
+            if (isMultiMode()) {
                 if (!state.currentStorage) {
                     // multi no storage
                     return false;
@@ -3232,9 +4078,13 @@
         /**
          * 通用云存储上传方法 - 合并COS/OSS/多模式上传逻辑
          */
-        uploadToCloudStorage: function (file, isBatch, storageType, attrName) {
+        uploadToCloudStorage: function (file, isBatch, storageType) {
             var self = this;
             var sec = byId('temediafolder');
+            var attrName = getStorageUploadAttr(storageType === 'multi' ? state.currentStorage : storageType) || 'data-multi-upload';
+            if (storageType === 'multi') {
+                attrName = 'data-multi-upload';
+            }
 
             var uploadUrl = sec ? sec.getAttribute(attrName) : null;
 
@@ -3256,30 +4106,11 @@
             var path = this.getCurrentPath();
             formData.append('temf_path', path);
 
-            var xhr = new XMLHttpRequest();
-            xhr.timeout = 120000;
-
-            xhr.upload.addEventListener('progress', function (e) {
-                if (e.lengthComputable) {
-                    var percent = (e.loaded / e.total) * 100;
-                    progress.updateFileProgress(percent);
+            this.currentXhr = this.sendUploadRequest(uploadUrl, formData, file, isBatch, {
+                load: function (xhr) {
+                    self.handleUploadResponse(xhr, file, isBatch);
                 }
             });
-
-            xhr.addEventListener('load', function () {
-                self.handleUploadResponse(xhr, file, isBatch);
-            });
-
-            xhr.addEventListener('error', function () {
-                self.handleUploadError('网络错误', file, isBatch);
-            });
-
-            xhr.addEventListener('timeout', function () {
-                self.handleUploadError('上传超时', file, isBatch);
-            });
-
-            xhr.open('POST', uploadUrl);
-            xhr.send(formData);
         },
 
         /**
@@ -3287,65 +4118,99 @@
          */
         handleUploadResponse: function (xhr, file, isBatch) {
             try {
-                var text = (xhr && typeof xhr.responseText === 'string') ? xhr.responseText : '';
-                var parsed = null;
-                if (text && text.trim().charAt(0) === '{') {
-                    try {
-                        parsed = JSON.parse(text);
-                    } catch (e) {
-                        parsed = null;
-                    }
-                }
-
-                // 检查 HTTP 状态码
-                if (xhr.status < 200 || xhr.status >= 300) {
-                    var errorMsg = '上传失败 (HTTP ' + xhr.status + ')';
-                    if (parsed && (parsed.msg || parsed.message)) {
-                        errorMsg = parsed.msg || parsed.message;
-                    } else if (text) {
-                        var normalized = text.replace(/\s+/g, ' ').trim();
-                        errorMsg += ': ' + normalized.substring(0, 120);
-                    }
-                    this.handleUploadError(errorMsg, file, isBatch);
+                var parsedResult = this.parseCloudUploadResponse(xhr);
+                if (!parsedResult.ok) {
+                    this.handleCloudUploadFailure(parsedResult.message, file, isBatch);
                     return;
                 }
 
-                if (!parsed) {
-                    this.handleUploadError('服务器返回非 JSON 响应', file, isBatch);
-                    return;
-                }
-
-                var result = parsed;
-                var success = result.ok && result.url;
+                var result = parsedResult.result;
+                var success = parsedResult.success;
 
                 if (success) {
-                    progress.updateFileProgress(100);
-
-                    var newFile = {
-                        name: result.name || file.name,
-                        url: result.url,
-                        thumbnail: result.thumbnail
-                    };
-
-                    ui.prependFile(newFile);
-
-                    // 非批量模式，上传成功后隐藏进度条
-                    if (!isBatch) {
-                        setTimeout(function () {
-                            progress.hide();
-                        }, 1000);
-                    }
+                    this.handleCloudUploadSuccess(result, file, isBatch);
                 } else {
                     var msg = (result && (result.msg || result.message)) ? (result.msg || result.message) : '上传失败';
-                    this.handleUploadError(msg, file, isBatch);
+                    this.handleCloudUploadFailure(msg, file, isBatch);
                 }
 
                 if (isBatch) {
                     this.onUploadComplete(success, file.name);
                 }
             } catch (e) {
-                this.handleUploadError('上传失败: ' + e.message, file, isBatch);
+                this.handleCloudUploadFailure('上传失败: ' + e.message, file, isBatch);
             }
+        },
+
+        parseCloudUploadResponse: function (xhr) {
+            var text = (xhr && typeof xhr.responseText === 'string') ? xhr.responseText : '';
+            var parsed = null;
+            if (text && text.trim().charAt(0) === '{') {
+                try {
+                    parsed = JSON.parse(text);
+                } catch (e) {
+                    parsed = null;
+                }
+            }
+
+            if (xhr.status < 200 || xhr.status >= 300) {
+                var errorMsg = '上传失败 (HTTP ' + xhr.status + ')';
+                if (parsed && (parsed.msg || parsed.message)) {
+                    errorMsg = parsed.msg || parsed.message;
+                } else if (text) {
+                    var normalized = text.replace(/\s+/g, ' ').trim();
+                    errorMsg += ': ' + normalized.substring(0, 120);
+                }
+                return { ok: false, message: errorMsg };
+            }
+
+            if (!parsed) {
+                return { ok: false, message: '服务器返回非 JSON 响应' };
+            }
+
+            return {
+                ok: true,
+                result: parsed,
+                success: !!(parsed.ok && parsed.url)
+            };
+        },
+
+        handleCloudUploadSuccess: function (result, file, isBatch) {
+            invalidateDirectoryCaches();
+            progress.updateFileProgress(100);
+
+            var resolvedSize = resolveFileSize(result) || (file && file.size) || 0;
+
+            var newFile = {
+                name: result.name || file.name,
+                url: result.url,
+                preview_url: result.preview_url || result.previewUrl || result.url,
+                thumbnail: result.thumbnail,
+                size: resolvedSize,
+                size_human: result.size_human || formatFileSize(resolvedSize),
+                directory: normalizeDirectoryPath(result.directory || '')
+            };
+
+            var currentSource = this.getCurrentStorageType();
+            var currentPath = normalizeDirectoryPath(this.getCurrentPath());
+            var targetDirectory = normalizeDirectoryPath(newFile.directory || '');
+            rememberRootFolderHint(currentSource, targetDirectory);
+
+            if (isCloudDirectoryStorage(currentSource) && targetDirectory !== currentPath) {
+                navigateCloudPath(targetDirectory, currentSource, { bustCache: true, forceRefresh: true });
+            } else {
+                ui.prependFile(newFile);
+            }
+
+            if (!isBatch) {
+                setTimeout(function () {
+                    progress.hide();
+                }, 1000);
+            }
+        },
+
+        handleCloudUploadFailure: function (message, file, isBatch) {
+            this.handleUploadError(message, file, isBatch);
         },
 
         /**
@@ -3372,22 +4237,10 @@
             }
         },
 
-        uploadToCos: function (file, isBatch) {
-            this.uploadToCloudStorage(file, isBatch, 'cos', 'data-cos-upload');
-        },
-
-        uploadToOss: function (file, isBatch) {
-            this.uploadToCloudStorage(file, isBatch, 'oss', 'data-oss-upload');
-        },
-
-        uploadToUpyun: function (file, isBatch) {
-            this.uploadToCloudStorage(file, isBatch, 'upyun', 'data-upyun-upload');
-        },
-
         uploadToLsky: function (file, isBatch) {
             var self = this;
             var sec = byId('temediafolder');
-            var uploadUrl = sec ? sec.getAttribute('data-lsky-upload') : null;
+            var uploadUrl = sec ? sec.getAttribute(getStorageUploadAttr('lsky')) : null;
             if (!uploadUrl) {
                 if (isBatch) self.onUploadComplete(false, file.name);
                 return;
@@ -3398,88 +4251,23 @@
             formData.append('file', file);
             formData.append('temf_path', path);
 
-            var xhr = new XMLHttpRequest();
-            xhr.timeout = 120000;
-            xhr.timeout = 120000;
-
-            xhr.upload.addEventListener('progress', function (e) {
-                if (e.lengthComputable) {
-                    var percent = (e.loaded / e.total) * 100;
-                    progress.updateFileProgress(percent);
+            this.currentXhr = this.sendUploadRequest(uploadUrl, formData, file, isBatch, {
+                load: function (xhr) {
+                    self.handleLskyUploadResponse(xhr, file, isBatch);
+                },
+                error: function () {
+                    self.handleLskyUploadFailure('网络错误', file, isBatch);
+                },
+                timeout: function () {
+                    self.handleLskyUploadFailure('上传超时', file, isBatch);
                 }
             });
-
-            xhr.addEventListener('load', function () {
-                var text = (xhr && typeof xhr.responseText === 'string') ? xhr.responseText : '';
-                var result = null;
-                var success = false;
-                if (text && text.trim().charAt(0) === '{') {
-                    try {
-                        result = JSON.parse(text);
-                        success = !!(result && result.ok && result.url);
-                    } catch (e) {
-                        // 保底：按失败处理
-                        result = { ok: false, msg: '解析响应失败' };
-                    }
-                } else {
-                    // 空响应或非JSON响应
-                    result = { ok: false, msg: (text ? '非JSON响应' : '空响应') };
-                }
-
-                if (success) {
-                    progress.updateFileProgress(100);
-
-                    var newFile = {
-                        name: result.name || file.name,
-                        url: result.url
-                    };
-                    ui.prependFile(newFile);
-                } else {
-                    var msg = (result && (result.msg || result.message)) ? (result.msg || result.message) : '上传失败';
-                    // uploadToLsky error
-                    progress.setError && progress.setError(msg);
-                    progress.hide();
-                }
-
-                if (isBatch) {
-                    self.onUploadComplete(success, file.name);
-                }
-            });
-
-            xhr.addEventListener('error', function () {
-                // uploadToLsky network error
-                progress.setError && progress.setError('网络错误');
-                progress.hide();
-                if (isBatch) {
-                    self.onUploadComplete(false, file.name);
-                }
-            });
-
-            xhr.addEventListener('timeout', function () {
-                // uploadToLsky timeout
-                progress.setError && progress.setError('上传超时');
-                progress.hide();
-                if (isBatch) {
-                    self.onUploadComplete(false, file.name);
-                }
-            });
-
-            xhr.open('POST', uploadUrl);
-            xhr.send(formData);
-        },
-
-        uploadToMulti: function (file, isBatch) {
-            if (!state.currentStorage) {
-                if (isBatch) this.onUploadComplete(false, file.name);
-                return;
-            }
-            this.uploadToCloudStorage(file, isBatch, 'multi', 'data-multi-upload');
         },
 
         uploadLocal: function (file, isBatch) {
             var self = this;
             var sec = byId('temediafolder');
-            var uploadUrl = sec ? sec.getAttribute('data-local-upload') : null;
+            var uploadUrl = sec ? sec.getAttribute(getStorageUploadAttr('local')) : null;
 
             if (!uploadUrl) {
                 if (isBatch) self.onUploadComplete(false, file.name);
@@ -3506,117 +4294,35 @@
                 }
             }
 
-            var xhr = new XMLHttpRequest();
-            xhr.timeout = 120000;
+            this.currentXhr = this.sendUploadRequest(uploadUrl, formData, file, isBatch, {
+                load: function (xhr) {
+                    try {
+                        var result = JSON.parse(xhr.responseText);
+                        var success = result.ok && result.url;
 
-            xhr.upload.addEventListener('progress', function (e) {
-                if (e.lengthComputable) {
-                    var percent = (e.loaded / e.total) * 100;
-                    progress.updateFileProgress(percent);
-                }
-            });
-
-            xhr.addEventListener('load', function () {
-                try {
-                    var result = JSON.parse(xhr.responseText);
-                    var success = result.ok && result.url;
-
-                    if (success) {
-                        progress.updateFileProgress(100);
-
-                        // 使用服务器返回的实际年月，或者当前选择的年月
-                        var year = result.year;
-                        var month = result.month;
-
-                        // 如果服务器没有返回，则使用当前选择的年月
-                        if (!year || !month) {
-                            var ySel = byId('temf-year');
-                            var mSel = byId('temf-month');
-                            if (ySel && ySel.value && mSel && mSel.value) {
-                                year = ySel.value;
-                                // 确保月份是零填充格式
-                                var monthValue = mSel.value;
-                                month = monthValue.length === 1 ? '0' + monthValue : monthValue;
-                            } else {
-                                var nowYM = getNowYearMonth();
-                                year = nowYM.year;
-                                month = nowYM.month;
-                            }
-                        }
-
-                        TEMF_CONF.data = TEMF_CONF.data || {};
-                        TEMF_CONF.data[year] = TEMF_CONF.data[year] || {};
-                        TEMF_CONF.data[year][month] = TEMF_CONF.data[year][month] || [];
-
-                        var newItem = {
-                            url: result.url,
-                            name: result.name,
-                            mtime: Math.floor(Date.now() / 1000)
-                        };
-
-                        var list = TEMF_CONF.data[year][month];
-                        list = [newItem].concat(list.filter(function (item) {
-                            return item.url !== result.url;
-                        }));
-                        TEMF_CONF.data[year][month] = list;
-
-                        var modalEl = document.getElementById('temf-modal');
-                        if (modalEl && modalEl.classList.contains('open')) {
-                            if (getEffectiveStorageSource() === 'local') {
-                                var targetMonthPath = year + '/' + month;
-                                var normalizedCurrent = normalizeDirectoryPath(state.currentPath || '');
-                                if (normalizedCurrent === targetMonthPath || normalizedCurrent.indexOf(targetMonthPath + '/') === 0) {
-                                    ui.prependFile(newItem);
-                                } else {
-                                    localBrowser.navigate(targetMonthPath);
-                                }
-                            }
-                        }
-                    } else {
-                        var msg = (result && (result.msg || result.message)) ? (result.msg || result.message) : '上传失败';
-                        if (!isBatch) {
-                            alert('上传失败: ' + msg);
+                        if (success) {
+                            self.handleLocalUploadSuccess(result);
                         } else {
-                            // 批量上传失败时也显示错误信息
-                            if (progress.setError) {
-                                progress.setError(msg);
-                            }
+                            var msg = (result && (result.msg || result.message)) ? (result.msg || result.message) : '上传失败';
+                            self.handleLocalUploadFailure(msg, file, isBatch);
+                        }
+
+                        if (isBatch) {
+                            self.onUploadComplete(success, file.name);
+                        }
+                    } catch (e) {
+                        if (isBatch) {
+                            self.onUploadComplete(false, file.name);
                         }
                     }
-
-                    if (isBatch) {
-                        self.onUploadComplete(success, file.name);
-                    }
-                } catch (e) {
-                    if (isBatch) {
-                        self.onUploadComplete(false, file.name);
-                    }
+                },
+                error: function () {
+                    self.handleLocalUploadFailure('网络错误', file, isBatch);
+                },
+                timeout: function () {
+                    self.handleLocalUploadFailure('上传超时', file, isBatch);
                 }
             });
-
-            xhr.addEventListener('error', function () {
-                if (isBatch) {
-                    if (progress.setError) {
-                        progress.setError('网络错误');
-                    }
-                    self.onUploadComplete(false, file.name);
-                } else {
-                    alert('上传失败: 网络错误');
-                }
-            });
-            xhr.addEventListener('timeout', function () {
-                if (isBatch) {
-                    if (progress.setError) {
-                        progress.setError('上传超时');
-                    }
-                    self.onUploadComplete(false, file.name);
-                } else {
-                    alert('上传失败: 上传超时');
-                }
-            });
-
-            xhr.open('POST', uploadUrl);
-            xhr.send(formData);
         },
 
         getCurrentPath: function () {
@@ -3624,9 +4330,15 @@
             if (!dir) return '';
             return normalizeDirectoryPath(dir.value || '');
         }
-    };
+        };
+    }
 
-    var localBrowser = {
+    var upload = createUploadModule();
+    upload.stagePanel = createUploadStagePanelModule(upload);
+    var dragUpload = createDragUploadModule(upload);
+
+    function createLocalDataModule() {
+        return {
         getAllFiles: function () {
             var result = [];
             var data = TEMF_CONF.data || {};
@@ -3749,7 +4461,11 @@
             });
 
             return { files: files, folders: folders };
-        },
+        }
+        };
+    }
+
+    var localBrowser = {
 
         init: function () {
             setSelectVisibility('temf-year', false);
@@ -3764,7 +4480,7 @@
 
         navigate: function (path) {
             setCurrentPath(path || '');
-            var view = this.buildView(state.currentPath);
+            var view = localData.buildView(state.currentPath);
             ui.renderFiles(view.files || [], view.folders || []);
         },
 
@@ -3772,6 +4488,28 @@
             this.navigate(state.currentPath || '');
         }
     };
+
+    var localData = createLocalDataModule();
+    var local = createLocalSelectorModule(localData, localBrowser);
+
+    function ensureSingleStorageLoaded(storageType) {
+        var entry = storageRegistry[storageType];
+        if (!entry) {
+            return false;
+        }
+
+        if (typeof entry.ensureLoaded === 'function') {
+            return entry.ensureLoaded();
+        }
+
+        if (entry.provider && entry.loadKey && !state[entry.loadKey]) {
+            entry.provider.init();
+            state[entry.loadKey] = true;
+            return true;
+        }
+
+        return false;
+    }
 
     /**
      * 分页控制器
@@ -3816,6 +4554,37 @@
                 }
             }
 
+            if (state.remotePagination.enabled) {
+                if (state.remotePagination.pageNumber <= 1 && !state.remotePagination.hasMore) {
+                    this.hide();
+                    return;
+                }
+
+                this.show();
+
+                var remotePrevBtn = this.element.querySelector('.temf-page-prev');
+                var remoteNextBtn = this.element.querySelector('.temf-page-next');
+                var remoteInfo = this.element.querySelector('.temf-page-info');
+
+                if (remotePrevBtn) {
+                    remotePrevBtn.disabled = state.remotePagination.pageNumber <= 1;
+                }
+
+                if (remoteNextBtn) {
+                    remoteNextBtn.disabled = !state.remotePagination.hasMore || !state.remotePagination.nextToken;
+                }
+
+                if (remoteInfo) {
+                    var count = Array.isArray(state.pagination.allFiles) ? state.pagination.allFiles.length : 0;
+                    var label = '第 ' + state.remotePagination.pageNumber + ' 页';
+                    if (count > 0) {
+                        label += ' / 本页 ' + count + ' 项';
+                    }
+                    remoteInfo.textContent = label;
+                }
+                return;
+            }
+
             var currentPage = state.pagination.currentPage;
             var totalItems = state.pagination.totalItems;
             var pageSize = state.pagination.pageSize;
@@ -3854,6 +4623,24 @@
         },
 
         prevPage: function () {
+            if (state.remotePagination.enabled) {
+                if (state.remotePagination.pageNumber <= 1 || state.remotePagination.history.length === 0) {
+                    return;
+                }
+
+                var previousToken = state.remotePagination.history[state.remotePagination.history.length - 1] || '';
+                state.remotePagination.history = state.remotePagination.history.slice(0, -1);
+                navigateCloudPath(state.remotePagination.path || '', state.remotePagination.storage || getEffectiveStorageSource(), {
+                    pageToken: previousToken,
+                    pageNumber: Math.max(1, state.remotePagination.pageNumber - 1),
+                    history: state.remotePagination.history.slice(),
+                    pageSize: state.remotePagination.pageSize,
+                    keepRemoteState: true
+                });
+                this.scrollToTop();
+                return;
+            }
+
             if (state.pagination.currentPage > 1) {
                 state.pagination.currentPage--;
                 ui.renderCurrentPage();
@@ -3862,6 +4649,24 @@
         },
 
         nextPage: function () {
+            if (state.remotePagination.enabled) {
+                if (!state.remotePagination.hasMore || !state.remotePagination.nextToken) {
+                    return;
+                }
+
+                var nextHistory = state.remotePagination.history.slice();
+                nextHistory.push(state.remotePagination.currentToken || '');
+                navigateCloudPath(state.remotePagination.path || '', state.remotePagination.storage || getEffectiveStorageSource(), {
+                    pageToken: state.remotePagination.nextToken,
+                    pageNumber: state.remotePagination.pageNumber + 1,
+                    history: nextHistory,
+                    pageSize: state.remotePagination.pageSize,
+                    keepRemoteState: true
+                });
+                this.scrollToTop();
+                return;
+            }
+
             var totalPages = Math.ceil(state.pagination.totalItems / state.pagination.pageSize);
             if (state.pagination.currentPage < totalPages) {
                 state.pagination.currentPage++;
@@ -4284,17 +5089,17 @@
             state.currentStorage = storage;
         }
 
-        if (storage === 'local') {
+        if (isLocalStorage(storage)) {
             multi.loadLocalData({ bustCache: true });
             return;
         }
 
-        if (storage === 'lsky') {
+        if (isLskyStorage(storage)) {
             multi.loadLskyData({ bustCache: true });
             return;
         }
 
-        if (storage === 'cos' || storage === 'oss' || storage === 'upyun') {
+        if (isCloudDirectoryStorage(storage)) {
             var dirSelect = byId('temf-dir');
             if (dirSelect) {
                 handleCloudStorageDirectoryChange(dirSelect, storage, { bustCache: true, forceRefresh: true });
@@ -4302,13 +5107,13 @@
             }
 
             multi.fetch('', function (data) {
-                ui.renderFiles(data.files || [], data.folders || []);
+                ui.renderFiles(data.files || [], data.folders || [], data);
             }, { bustCache: true });
             return;
         }
 
         multi.fetch('', function (data) {
-            ui.renderFiles(data.files || [], data.folders || []);
+            ui.renderFiles(data.files || [], data.folders || [], data);
         }, { bustCache: true });
     }
 
@@ -4316,22 +5121,22 @@
         try {
             var source = TEMF_CONF.source;
 
-            if (source === 'multi') {
+            if (isMultiMode()) {
                 refreshMultiStorage();
                 return;
             }
 
-            if (source === 'local') {
-                local.fetchLatest({ bustCache: true });
+            if (isLocalStorage(source)) {
+                local.fetchLatest({ bustCache: true, rebuildIndex: true });
                 return;
             }
 
-            if (source === 'lsky') {
+            if (isLskyStorage(source)) {
                 lsky.init({ bustCache: true });
                 return;
             }
 
-            if (source === 'cos' || source === 'oss' || source === 'upyun') {
+            if (isCloudDirectoryStorage(source)) {
                 var dirSelect = byId('temf-dir');
                 if (dirSelect) {
                     handleCloudStorageDirectoryChange(dirSelect, source, { bustCache: true, forceRefresh: true });
@@ -4363,15 +5168,15 @@
             : null;
         if (folderItem) {
             var folderPath = normalizeDirectoryPath(folderItem.getAttribute('data-path') || '');
-            var currentSource = TEMF_CONF.source === 'multi'
+            var currentSource = isMultiMode()
                 ? (state.currentStorage || '')
                 : (TEMF_CONF.source || '');
 
-            if (currentSource === 'cos' || currentSource === 'oss' || currentSource === 'upyun') {
+            if (isCloudDirectoryStorage(currentSource)) {
                 navigateCloudPath(folderPath, currentSource);
                 e.preventDefault();
                 return;
-            } else if (currentSource === 'local') {
+            } else if (isLocalStorage(currentSource)) {
                 localBrowser.navigate(folderPath);
                 e.preventDefault();
                 return;
@@ -4384,11 +5189,11 @@
         if (crumb) {
             var crumbPath = normalizeDirectoryPath(crumb.getAttribute('data-path') || '');
             var crumbSource = getEffectiveStorageSource();
-            if (crumbSource === 'cos' || crumbSource === 'oss' || crumbSource === 'upyun') {
+            if (isCloudDirectoryStorage(crumbSource)) {
                 navigateCloudPath(crumbPath, crumbSource);
                 e.preventDefault();
                 return;
-            } else if (crumbSource === 'local') {
+            } else if (isLocalStorage(crumbSource)) {
                 localBrowser.navigate(crumbPath);
                 e.preventDefault();
                 return;
@@ -4417,6 +5222,36 @@
         if (target && target.matches("#temf-insert-selected")) {
             fileOps.insertSelected();
             e.preventDefault();
+        }
+
+        if (target && target.matches('[data-temf-stage-pick]')) {
+            fileOps.upload();
+            e.preventDefault();
+            return;
+        }
+
+        if (target && target.matches('[data-temf-stage-clear]')) {
+            upload.clearStagedFiles();
+            e.preventDefault();
+            return;
+        }
+
+        if (target && target.matches('[data-temf-stage-start]')) {
+            upload.startStagedUpload();
+            e.preventDefault();
+            return;
+        }
+
+        if (target && target.matches('[data-temf-stage-cancel]')) {
+            upload.cancelStagePanel();
+            e.preventDefault();
+            return;
+        }
+
+        if (target && target.matches('[data-temf-stage-remove]')) {
+            upload.removeStagedFile(parseInt(target.getAttribute('data-temf-stage-remove'), 10) || 0);
+            e.preventDefault();
+            return;
         }
 
         var copyBtn = null;
@@ -4469,16 +5304,34 @@
      */
     function navigateCloudPath(path, currentSource, options) {
         options = options || {};
-        var isMulti = TEMF_CONF.source === 'multi';
+        var isMulti = isMultiMode();
         var normalizedPath = normalizeDirectoryPath(path || '');
+        var normalizedSource = String(currentSource || '').toLowerCase();
 
-        if (options.forceRefresh && isMulti && currentSource && state.currentStorage !== currentSource) {
-            state.currentStorage = currentSource;
+        if (options.forceRefresh && isMulti && normalizedSource && state.currentStorage !== normalizedSource) {
+            state.currentStorage = normalizedSource;
+        }
+
+        if (!options.keepRemoteState || state.remotePagination.path !== normalizedPath || state.remotePagination.storage !== normalizedSource) {
+            resetRemotePagination(normalizedSource, normalizedPath, { enabled: isServerPagedStorage(normalizedSource) });
+        }
+
+        if (typeof options.pageToken === 'string') {
+            state.remotePagination.currentToken = options.pageToken;
+        }
+        if (options.history) {
+            state.remotePagination.history = options.history.slice();
+        }
+        if (options.pageNumber) {
+            state.remotePagination.pageNumber = options.pageNumber;
+        }
+        if (options.pageSize) {
+            state.remotePagination.pageSize = options.pageSize;
         }
 
         var fetchFunction = isMulti
             ? function (nextPath, callback, opts) { multi.fetch(nextPath, callback, Object.assign({}, opts, { bustCache: options.bustCache })); }
-            : function (nextPath, callback, opts) { cloudStorage.fetch(currentSource, nextPath, callback, Object.assign({}, opts, { bustCache: options.bustCache })); };
+            : function (nextPath, callback, opts) { cloudStorage.fetch(normalizedSource, nextPath, callback, Object.assign({}, opts, { bustCache: options.bustCache })); };
 
         setCurrentPath(normalizedPath);
         fetchFunction(normalizedPath, function (data) {
@@ -4486,8 +5339,11 @@
             if (dirSelect) {
                 cloudStorage.syncDirectorySelector(dirSelect, normalizedPath, data.folders || []);
             }
-            ui.renderFiles(data.files || [], data.folders || []);
-        }, options);
+            ui.renderFiles(data.files || [], data.folders || [], data);
+        }, Object.assign({}, options, {
+            pageToken: state.remotePagination.currentToken || '',
+            pageSize: state.remotePagination.pageSize || calculatePageSize()
+        }));
     }
 
     function handleCloudStorageDirectoryChange(target, currentSource, options) {
@@ -4507,30 +5363,30 @@
         }
 
         // 处理云存储（COS/OSS/UPYUN）目录切换
-        if ((currentSource === 'cos' || currentSource === 'oss' || currentSource === 'upyun') &&
+        if (isCloudDirectoryStorage(currentSource) &&
             target.id === 'temf-dir') {
             handleCloudStorageDirectoryChange(target, currentSource);
-        } else if (currentSource === 'lsky') {
+        } else if (isLskyStorage(currentSource)) {
             if (target && target.id === 'temf-dir') {
                 var selection = target.value;
                 setCurrentPath('');
 
                 // 多模式下使用multi.fetch，单模式下使用lsky.fetch
-                var fetchFunction = TEMF_CONF.source === 'multi' ? multi.fetch : lsky.fetch;
+                var fetchFunction = isMultiMode() ? multi.fetch : lsky.fetch;
 
                 if (selection === 'album') {
                     // 选择相册：使用相册ID过滤
                     fetchFunction('album', function (data) {
-                        ui.renderFiles(data.files || [], data.folders || []);
+                        ui.renderFiles(data.files || [], data.folders || [], data);
                     });
                 } else {
                     // 选择全部：显示所有图片
                     fetchFunction('', function (data) {
-                        ui.renderFiles(data.files || [], data.folders || []);
+                        ui.renderFiles(data.files || [], data.folders || [], data);
                     });
                 }
             }
-        } else if (currentSource === 'local') {
+        } else if (isLocalStorage(currentSource)) {
             if (target && target.id === 'temf-year') {
                 local.buildMonths(target.value);
                 local.renderCurrentMonth();
@@ -4688,7 +5544,7 @@
         lazyImageMutationObserver = new MutationObserver(function (mutations) {
             mutations.forEach(function (mutation) {
                 if (mutation.addedNodes.length > 0) {
-                    initLazyLoading();
+                    scheduleInitLazyLoading();
                 }
             });
         });
@@ -4713,6 +5569,16 @@
             setupLazyImageObserver();
             setupResizeListener();
         });
+    }
+
+    function scheduleInitLazyLoading() {
+        if (lazyInitTimer) {
+            clearTimeout(lazyInitTimer);
+        }
+        lazyInitTimer = setTimeout(function () {
+            lazyInitTimer = null;
+            initLazyLoading();
+        }, 50);
     }
 
 })(window, document);

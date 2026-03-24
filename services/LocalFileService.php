@@ -6,6 +6,9 @@ use TypechoPlugin\TEMediaFolder\Core\ConfigManager;
 
 class LocalFileService extends BaseService
 {
+    const INDEX_SCHEMA_VERSION = 1;
+    const INDEX_TTL_SECONDS = 300;
+
     private static $imageExtensionsMap = [
         'jpg' => true,
         'jpeg' => true,
@@ -20,11 +23,13 @@ class LocalFileService extends BaseService
     ];
 
     private $fileGroups = null;
+    private $indexData = null;
 
     public function getFileGroups()
     {
         if ($this->fileGroups === null) {
-            $this->fileGroups = $this->loadFileGroups();
+            $index = $this->getIndexData();
+            $this->fileGroups = isset($index['groups']) && is_array($index['groups']) ? $index['groups'] : [];
         }
         return $this->fileGroups;
     }
@@ -32,104 +37,19 @@ class LocalFileService extends BaseService
     public function clearCache()
     {
         $this->fileGroups = null;
+        $this->indexData = null;
+    }
+
+    public function rebuildIndex()
+    {
+        $this->clearCache();
+        return $this->getIndexData(true);
     }
 
     private function loadFileGroups()
     {
-        $uploadDir = $this->config->getUploadDir();
-        $uploadUrl = $this->config->getUploadUrl();
-        $allowed = $this->config->get('extensions', []);
-        $maxPerMonth = $this->config->get('maxPerMonth', 200);
-
-        if (!is_dir($uploadDir)) {
-            return [];
-        }
-
-        // 性能优化：将扩展名数组转为哈希表以提高查找速度
-        $allowedExtensions = array_flip(array_map('strtolower', $allowed));
-        
-        $groups = [];
-
-        // 性能优化：使用更高效的迭代器配置
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($uploadDir, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::CURRENT_AS_FILEINFO),
-            \RecursiveIteratorIterator::LEAVES_ONLY
-        );
-
-
-        foreach ($iterator as $fileInfo) {
-            if (!$fileInfo->isFile()) {
-                continue;
-            }
-
-            $ext = strtolower($fileInfo->getExtension());
-            if (!isset($allowedExtensions[$ext])) {
-                continue;
-            }
-
-            $fullPath = $fileInfo->getPathname();
-            $relative = str_replace(DIRECTORY_SEPARATOR, '/', substr($fullPath, strlen($uploadDir) + 1));
-            $segments = explode('/', $relative);
-            
-            $ym = null;
-            if (count($segments) >= 2) {
-                $yearSegment = $segments[0];
-                $monthSegment = $segments[1];
-                if (preg_match('/^\d{4}$/', $yearSegment) && preg_match('/^(0?[1-9]|1[0-2])$/', $monthSegment)) {
-                    $ym = sprintf('%s-%02d', $yearSegment, (int)$monthSegment);
-                }
-            }
-            
-            $mtime = $fileInfo->getMTime();
-            if ($ym === null) {
-                $ym = date('Y-m', $mtime);
-            }
-            
-            $url = $uploadUrl . $relative;
-
-            $directoryPath = '';
-            if (strpos($relative, '/') !== false) {
-                $dirName = trim(str_replace('\\', '/', dirname($relative)), '/');
-                if ($dirName !== '.' && $dirName !== '') {
-                    $directoryPath = $dirName;
-                }
-            }
-
-            $fileData = [
-                'url' => $url,
-                'name' => $fileInfo->getFilename(),
-                'mtime' => $mtime,
-                'size' => $fileInfo->getSize(),
-                'directory' => $directoryPath
-            ];
-            
-            // 性能优化：仅图片生成缩略图，避免额外函数调用
-            if (isset(self::$imageExtensionsMap[$ext])) {
-                $fileData['thumbnail'] = $this->getThumbnailUrl($url);
-            }
-            
-            if (!isset($groups[$ym])) {
-                $groups[$ym] = [];
-            }
-
-            $groups[$ym][] = $fileData;
-        }
-
-        foreach ($groups as $ym => &$items) {
-            usort($items, function($a, $b) {
-                return ($b['mtime'] ?? 0) <=> ($a['mtime'] ?? 0);
-            });
-
-            if ($maxPerMonth > 0 && count($items) > $maxPerMonth) {
-                $items = array_slice($items, 0, $maxPerMonth);
-            }
-        }
-        unset($items);
-
-        // 性能优化：按年月倒序排列
-        krsort($groups);
-
-        return $groups;
+        $index = $this->buildIndexData();
+        return isset($index['groups']) && is_array($index['groups']) ? $index['groups'] : [];
     }
 
 
@@ -137,21 +57,14 @@ class LocalFileService extends BaseService
     public function getFileList($path = '')
     {
         $uploadDir = $this->config->getUploadDir();
-        $uploadUrl = rtrim($this->config->getUploadUrl(), '/') . '/';
-
         if (!is_dir($uploadDir)) {
             return ['ok' => true, 'folders' => [], 'files' => []];
         }
 
         $normalizedPath = trim(str_replace(['\\'], '/', $path), '/');
-        $targetDir = $this->resolveDirectoryPath($uploadDir, $normalizedPath);
-
-        if ($targetDir === null || !is_dir($targetDir)) {
-            return ['ok' => true, 'folders' => [], 'files' => []];
-        }
-
-        $folders = $this->collectImmediateSubFolders($uploadDir, $targetDir, $normalizedPath);
-        $files = $this->collectFilesRecursively($uploadDir, $uploadUrl, $targetDir, $normalizedPath);
+        $index = $this->getIndexData();
+        $folders = $this->collectImmediateSubFoldersFromIndex($normalizedPath, $index);
+        $files = $this->collectFilesFromIndex($normalizedPath, $index);
 
         return [
             'ok' => true,
@@ -287,10 +200,11 @@ class LocalFileService extends BaseService
     public function addFileWithSize($url, $name, $mtime = null, $size = 0, $thumbnail = null, $directory = '')
     {
         $mtime = $mtime ?: time();
-        $ym = date('Y-m', $mtime);
+        $directory = $directory ? str_replace('\\', '/', trim($directory, '/')) : '';
+        $ym = $this->resolveGroupFromRelativePath(($directory !== '' ? $directory . '/' : '') . $name, $mtime);
 
         if ($this->fileGroups === null) {
-            $this->fileGroups = $this->loadFileGroups();
+            $this->fileGroups = $this->getFileGroups();
         }
 
         if (!isset($this->fileGroups[$ym])) {
@@ -301,13 +215,15 @@ class LocalFileService extends BaseService
             return $item['url'] !== $url;
         });
 
-        $fileData = [
-            'url' => $url,
-            'name' => $name,
-            'mtime' => $mtime,
-            'size' => $size,
-            'directory' => $directory ? str_replace('\\', '/', trim($directory, '/')) : ''
-        ];
+            $fileData = [
+                'url' => $url,
+                'name' => $name,
+                'mtime' => $mtime,
+                'size' => $size,
+                'size_human' => $size > 0 ? $this->formatFileSizeHuman($size) : '',
+                'directory' => $directory,
+                'group' => $ym
+            ];
         
         if ($thumbnail) {
             $fileData['thumbnail'] = $thumbnail;
@@ -321,6 +237,7 @@ class LocalFileService extends BaseService
         }
 
         krsort($this->fileGroups);
+        $this->updateIndexForAdd($fileData);
     }
 
     public function renameFile($fileUrl, $newBaseName)
@@ -409,7 +326,7 @@ class LocalFileService extends BaseService
     private function removeFileFromCache($url)
     {
         if ($this->fileGroups === null) {
-            $this->fileGroups = $this->loadFileGroups();
+            $this->fileGroups = $this->getFileGroups();
         }
 
         foreach ($this->fileGroups as $ym => &$items) {
@@ -420,6 +337,8 @@ class LocalFileService extends BaseService
                 unset($this->fileGroups[$ym]);
             }
         }
+
+        $this->updateIndexForRemove($url);
     }
 
     public function deleteFile($fileUrl, $fileId = null)
@@ -619,5 +538,365 @@ class LocalFileService extends BaseService
     private function getThumbnailUrl($originalUrl)
     {
         return $originalUrl;
+    }
+
+    private function getIndexData($forceRebuild = false)
+    {
+        if ($this->indexData !== null && !$forceRebuild) {
+            return $this->indexData;
+        }
+
+        $indexFile = $this->getIndexFilePath();
+        if (!$forceRebuild && $this->isIndexFresh($indexFile)) {
+            $loaded = $this->loadIndexFile($indexFile);
+            if ($loaded !== null) {
+                $this->indexData = $loaded;
+                return $this->indexData;
+            }
+        }
+
+        $this->indexData = $this->buildIndexData();
+        $this->persistIndexData($this->indexData);
+        return $this->indexData;
+    }
+
+    private function buildIndexData()
+    {
+        $uploadDir = $this->config->getUploadDir();
+        $uploadUrl = rtrim($this->config->getUploadUrl(), '/') . '/';
+        $allowed = $this->config->get('extensions', []);
+        $maxPerMonth = $this->config->get('maxPerMonth', 200);
+
+        $index = [
+            'version' => self::INDEX_SCHEMA_VERSION,
+            'built_at' => time(),
+            'config_hash' => $this->getIndexConfigHash(),
+            'directories' => [],
+            'files' => [],
+            'groups' => []
+        ];
+
+        if (!is_dir($uploadDir)) {
+            return $index;
+        }
+
+        $allowedExtensions = array_flip(array_map('strtolower', $allowed));
+        $directories = [];
+        $groups = [];
+        $files = [];
+
+        try {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($uploadDir, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::CURRENT_AS_FILEINFO),
+                \RecursiveIteratorIterator::SELF_FIRST
+            );
+
+            $baseReal = realpath($uploadDir);
+            if ($baseReal === false) {
+                return $index;
+            }
+
+            foreach ($iterator as $fileInfo) {
+                $realPath = $fileInfo->getRealPath();
+                if ($realPath === false || strpos($realPath, $baseReal) !== 0) {
+                    continue;
+                }
+
+                $relative = ltrim(str_replace($baseReal, '', $realPath), DIRECTORY_SEPARATOR);
+                $relative = str_replace(DIRECTORY_SEPARATOR, '/', $relative);
+
+                if ($fileInfo->isDir()) {
+                    $relativeDir = trim($relative, '/');
+                    if ($relativeDir !== '') {
+                        $directories[$relativeDir] = true;
+                    }
+                    continue;
+                }
+
+                if (!$fileInfo->isFile()) {
+                    continue;
+                }
+
+                $ext = strtolower($fileInfo->getExtension());
+                if (!isset($allowedExtensions[$ext])) {
+                    continue;
+                }
+
+                $directoryPath = '';
+                if (strpos($relative, '/') !== false) {
+                    $dirName = trim(str_replace('\\', '/', dirname($relative)), '/');
+                    if ($dirName !== '.' && $dirName !== '') {
+                        $directoryPath = $dirName;
+                    }
+                }
+
+                $mtime = $fileInfo->getMTime();
+                $group = $this->resolveGroupFromRelativePath($relative, $mtime);
+                $url = $uploadUrl . $relative;
+                $fileData = [
+                    'url' => $url,
+                    'name' => $fileInfo->getFilename(),
+                    'mtime' => $mtime,
+                    'size' => $fileInfo->getSize(),
+                    'size_human' => $this->formatFileSizeHuman($fileInfo->getSize()),
+                    'directory' => $directoryPath,
+                    'group' => $group
+                ];
+
+                if (isset(self::$imageExtensionsMap[$ext])) {
+                    $fileData['thumbnail'] = $this->getThumbnailUrl($url);
+                }
+
+                $files[] = $fileData;
+                if (!isset($groups[$group])) {
+                    $groups[$group] = [];
+                }
+                $groups[$group][] = $fileData;
+            }
+        } catch (\UnexpectedValueException $e) {
+            return $index;
+        }
+
+        usort($files, function ($a, $b) {
+            return ($b['mtime'] ?? 0) <=> ($a['mtime'] ?? 0);
+        });
+
+        foreach ($groups as $ym => &$items) {
+            usort($items, function ($a, $b) {
+                return ($b['mtime'] ?? 0) <=> ($a['mtime'] ?? 0);
+            });
+            if ($maxPerMonth > 0 && count($items) > $maxPerMonth) {
+                $items = array_slice($items, 0, $maxPerMonth);
+            }
+        }
+        unset($items);
+        krsort($groups);
+
+        $directoryList = array_keys($directories);
+        usort($directoryList, 'strnatcasecmp');
+
+        $index['directories'] = $directoryList;
+        $index['files'] = $files;
+        $index['groups'] = $groups;
+
+        return $index;
+    }
+
+    private function getIndexFilePath()
+    {
+        return rtrim($this->config->getUploadDir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . '.temf_local_index.json';
+    }
+
+    private function isIndexFresh($indexFile)
+    {
+        if (!is_file($indexFile)) {
+            return false;
+        }
+
+        $mtime = @filemtime($indexFile);
+        if (!$mtime) {
+            return false;
+        }
+
+        return (time() - (int)$mtime) <= self::INDEX_TTL_SECONDS;
+    }
+
+    private function loadIndexFile($indexFile)
+    {
+        $raw = @file_get_contents($indexFile);
+        if ($raw === false || $raw === '') {
+            return null;
+        }
+
+        $data = json_decode($raw, true);
+        if (!is_array($data)) {
+            return null;
+        }
+
+        if (($data['version'] ?? 0) !== self::INDEX_SCHEMA_VERSION) {
+            return null;
+        }
+
+        if (($data['config_hash'] ?? '') !== $this->getIndexConfigHash()) {
+            return null;
+        }
+
+        if (!isset($data['directories']) || !is_array($data['directories']) || !isset($data['files']) || !is_array($data['files']) || !isset($data['groups']) || !is_array($data['groups'])) {
+            return null;
+        }
+
+        return $data;
+    }
+
+    private function persistIndexData($index)
+    {
+        $indexFile = $this->getIndexFilePath();
+        $dir = dirname($indexFile);
+        if (!is_dir($dir)) {
+            return;
+        }
+
+        $payload = json_encode($index, JSON_UNESCAPED_SLASHES);
+        if (!is_string($payload) || $payload === '') {
+            return;
+        }
+
+        @file_put_contents($indexFile, $payload, LOCK_EX);
+        $this->indexData = $index;
+        $this->fileGroups = isset($index['groups']) && is_array($index['groups']) ? $index['groups'] : [];
+    }
+
+    private function getIndexConfigHash()
+    {
+        return md5(json_encode([
+            'uploadDir' => $this->config->getUploadDir(),
+            'uploadUrl' => $this->config->getUploadUrl(),
+            'extensions' => $this->config->get('extensions', []),
+            'maxPerMonth' => $this->config->get('maxPerMonth', 200)
+        ]));
+    }
+
+    private function resolveGroupFromRelativePath($relativePath, $mtime)
+    {
+        $segments = explode('/', trim(str_replace('\\', '/', $relativePath), '/'));
+        if (count($segments) >= 2) {
+            $yearSegment = $segments[0];
+            $monthSegment = $segments[1];
+            if (preg_match('/^\d{4}$/', $yearSegment) && preg_match('/^(0?[1-9]|1[0-2])$/', $monthSegment)) {
+                return sprintf('%s-%02d', $yearSegment, (int)$monthSegment);
+            }
+        }
+
+        return date('Y-m', $mtime);
+    }
+
+    private function collectImmediateSubFoldersFromIndex($normalizedPath, $index)
+    {
+        $normalizedPath = trim(str_replace('\\', '/', $normalizedPath), '/');
+        $prefix = $normalizedPath === '' ? '' : $normalizedPath . '/';
+        $folders = [];
+        $seen = [];
+        $directories = isset($index['directories']) && is_array($index['directories']) ? $index['directories'] : [];
+
+        foreach ($directories as $directory) {
+            $directory = trim(str_replace('\\', '/', (string)$directory), '/');
+            if ($directory === '') {
+                continue;
+            }
+
+            if ($normalizedPath !== '') {
+                if (strpos($directory, $prefix) !== 0) {
+                    continue;
+                }
+                $remaining = substr($directory, strlen($prefix));
+            } else {
+                $remaining = $directory;
+            }
+
+            if ($remaining === '' || strpos($remaining, '/') === false && isset($seen[$remaining])) {
+                continue;
+            }
+
+            $parts = explode('/', $remaining);
+            $name = $parts[0];
+            if ($name === '' || isset($seen[$name])) {
+                continue;
+            }
+
+            $folderPath = $normalizedPath !== '' ? $normalizedPath . '/' . $name : $name;
+            $folders[] = [
+                'name' => $name,
+                'path' => $folderPath
+            ];
+            $seen[$name] = true;
+        }
+
+        usort($folders, function ($a, $b) {
+            return strnatcasecmp($a['name'], $b['name']);
+        });
+
+        return $folders;
+    }
+
+    private function collectFilesFromIndex($normalizedPath, $index)
+    {
+        $normalizedPath = trim(str_replace('\\', '/', $normalizedPath), '/');
+        $files = isset($index['files']) && is_array($index['files']) ? $index['files'] : [];
+        if ($normalizedPath === '') {
+            return $files;
+        }
+
+        $prefix = $normalizedPath . '/';
+        return array_values(array_filter($files, function ($file) use ($normalizedPath, $prefix) {
+            $directory = trim(str_replace('\\', '/', (string)($file['directory'] ?? '')), '/');
+            return $directory === $normalizedPath || strpos($directory, $prefix) === 0;
+        }));
+    }
+
+    private function updateIndexForAdd($fileData)
+    {
+        $index = $this->getIndexData();
+        $url = $fileData['url'];
+
+        $index['files'] = array_values(array_filter($index['files'], function ($item) use ($url) {
+            return ($item['url'] ?? '') !== $url;
+        }));
+        $index['files'][] = $fileData;
+        usort($index['files'], function ($a, $b) {
+            return ($b['mtime'] ?? 0) <=> ($a['mtime'] ?? 0);
+        });
+
+        $group = $fileData['group'] ?? date('Y-m', (int)($fileData['mtime'] ?? time()));
+        if (!isset($index['groups'][$group]) || !is_array($index['groups'][$group])) {
+            $index['groups'][$group] = [];
+        }
+        $index['groups'][$group] = array_values(array_filter($index['groups'][$group], function ($item) use ($url) {
+            return ($item['url'] ?? '') !== $url;
+        }));
+        array_unshift($index['groups'][$group], $fileData);
+
+        $maxPerMonth = $this->config->get('maxPerMonth', 200);
+        if ($maxPerMonth > 0 && count($index['groups'][$group]) > $maxPerMonth) {
+            $index['groups'][$group] = array_slice($index['groups'][$group], 0, $maxPerMonth);
+        }
+        krsort($index['groups']);
+
+        $directory = trim((string)($fileData['directory'] ?? ''), '/');
+        if ($directory !== '') {
+            $parts = explode('/', $directory);
+            $chain = [];
+            foreach ($parts as $part) {
+                $chain[] = $part;
+                $dirPath = implode('/', $chain);
+                if (!in_array($dirPath, $index['directories'], true)) {
+                    $index['directories'][] = $dirPath;
+                }
+            }
+            usort($index['directories'], 'strnatcasecmp');
+        }
+
+        $index['built_at'] = time();
+        $this->persistIndexData($index);
+    }
+
+    private function updateIndexForRemove($url)
+    {
+        $index = $this->getIndexData();
+        $index['files'] = array_values(array_filter($index['files'], function ($item) use ($url) {
+            return ($item['url'] ?? '') !== $url;
+        }));
+
+        foreach ($index['groups'] as $group => &$items) {
+            $items = array_values(array_filter($items, function ($item) use ($url) {
+                return ($item['url'] ?? '') !== $url;
+            }));
+            if (empty($items)) {
+                unset($index['groups'][$group]);
+            }
+        }
+        unset($items);
+
+        $index['built_at'] = time();
+        $this->persistIndexData($index);
     }
 }

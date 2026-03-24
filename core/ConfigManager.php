@@ -52,8 +52,8 @@ class ConfigManager
             'enabled' => $this->getBoolConfig('enabled', true),
             'storage' => $this->getStringConfig('storage', 'local'),
             'maxPerMonth' => $this->getIntConfig('maxPerMonth', 200),
-            'thumbSize' => $this->getIntConfig('thumb', 120),
             'paginationRows' => $this->getIntConfig('paginationRows', 4),
+            'networkYearMonthFolders' => $this->getBoolConfig('networkYearMonthFolders', false),
             'extensions' => $this->getArrayConfig('extensions', ['jpg','jpeg','png','gif','webp','svg']),
             
             // COS配置
@@ -74,6 +74,17 @@ class ConfigManager
                 'accessKeySecret' => $this->getStringConfig('ossAccessKeySecret', ''),
                 'prefix' => $this->getStringConfig('ossPrefix', ''),
                 'domain' => $this->getStringConfig('ossDomain', ''),
+            ],
+
+            // Bitiful 配置
+            'bitiful' => [
+                'bucket' => $this->getStringConfig('bitifulBucket', ''),
+                'region' => $this->getStringConfig('bitifulRegion', 'cn-east-1'),
+                'endpoint' => $this->getStringConfig('bitifulEndpoint', 'https://s3.bitiful.net'),
+                'accessKey' => $this->getStringConfig('bitifulAccessKey', ''),
+                'secretKey' => $this->getStringConfig('bitifulSecretKey', ''),
+                'prefix' => $this->getStringConfig('bitifulPrefix', ''),
+                'domain' => $this->getStringConfig('bitifulDomain', ''),
             ],
             
             // Lsky配置
@@ -123,6 +134,11 @@ class ConfigManager
         return $this->config['oss'];
     }
 
+    public function getBitifulConfig()
+    {
+        return $this->config['bitiful'];
+    }
+
     public function getLskyConfig()
     {
         return $this->config['lsky'];
@@ -146,6 +162,10 @@ class ConfigManager
             case 'oss':
                 $config = $this->getOssConfig();
                 return !empty($config['bucket']) && !empty($config['accessKeyId']) && !empty($config['accessKeySecret']);
+
+            case 'bitiful':
+                $config = $this->getBitifulConfig();
+                return !empty($config['bucket']) && !empty($config['region']) && !empty($config['endpoint']) && !empty($config['accessKey']) && !empty($config['secretKey']);
             
             case 'lsky':
                 $config = $this->getLskyConfig();
@@ -188,6 +208,13 @@ class ConfigManager
             $types[] = [
                 'key' => 'oss',
                 'name' => '阿里云OSS'
+            ];
+        }
+
+        if ($this->isStorageConfigured('bitiful')) {
+            $types[] = [
+                'key' => 'bitiful',
+                'name' => '缤纷云存储'
             ];
         }
         

@@ -214,14 +214,9 @@ class ImageCompressor
         imagedestroy($jpgImage);
         
         if ($success) {
-            // 仅当新文件更小才采用，否则回退原文件
-            $originalSize = @filesize($filePath) ?: PHP_INT_MAX;
-            $newSize = @filesize($outputPath) ?: PHP_INT_MAX;
-            if ($newSize < $originalSize * 0.98) { // 至少节省约2%
-                return ['path' => $outputPath, 'compressed' => true, 'format' => 'jpg'];
-            }
-            @unlink($outputPath);
-            return ['path' => $filePath, 'compressed' => false, 'reason' => 'jpg not smaller'];
+            // 兰空图床以兼容上传成功率优先，强制采用 JPG 结果，
+            // 避免原始 PNG/GIF/WebP 在部分实例中被判定为不支持的类型。
+            return ['path' => $outputPath, 'compressed' => true, 'format' => 'jpg'];
         }
         
         return ['path' => $filePath, 'compressed' => false, 'reason' => 'Failed to save JPG'];
